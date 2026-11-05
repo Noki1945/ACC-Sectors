@@ -1,6 +1,6 @@
 ﻿param([switch]$Demo, [switch]$SelfTest, [switch]$Preview, [ValidateRange(0,10000)][int]$PreviewDelayMs=400)
 $ErrorActionPreference = 'Stop'
-Add-Type -Path (Join-Path $PSScriptRoot 'Telemetry.cs')
+Add-Type -Path @((Join-Path $PSScriptRoot 'Telemetry.cs'),(Join-Path $PSScriptRoot 'Broadcast.cs'))
 if ($SelfTest) {
     function Frame($laps,$sector,$split,$last=0) {
         $f = New-Object AccOverlay.Frame
@@ -83,7 +83,8 @@ if ($SelfTest) {
     [Text.Encoding]::Unicode.GetBytes('1:32.037').CopyTo($bytes,72)
     $decoded=[AccOverlay.Reader]::Decode($bytes)
     if ($decoded.Best -ne 92037 -or $decoded.Current -ne 25001 -or $decoded.Laps -ne 4 -or $decoded.Position -ne 0.25 -or $decoded.SessionIndex -ne 7 -or -not $decoded.Valid) { throw 'Graphics decoding failed' }
-    Write-Host 'Timing tests passed'; exit
+    . (Join-Path $PSScriptRoot 'RegressionTests.ps1')
+    Write-Host 'Timing and broadcasting tests passed'; exit
 }
 Add-Type -AssemblyName PresentationFramework
 [xml]$xaml=@'
@@ -92,22 +93,22 @@ Add-Type -AssemblyName PresentationFramework
   <StackPanel>
    <DockPanel Margin="0,0,0,7"><TextBlock Text="ACC / SECTORS" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="State" Text="ОЖИДАНИЕ ACC" FontSize="13" HorizontalAlignment="Right" Foreground="#FFFFFF"/></DockPanel>
    <UniformGrid Columns="4">
-    <StackPanel><TextBlock Text="S1" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S0" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D0" Text="—" FontSize="14"/></StackPanel>
-    <StackPanel><TextBlock Text="S2" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S1" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D1" Text="—" FontSize="14"/></StackPanel>
-    <StackPanel><TextBlock Text="S3" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S2" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D2" Text="—" FontSize="14"/></StackPanel>
-    <StackPanel><TextBlock Text="КРУГ" FontSize="13"/><TextBlock Name="Lap" Text="--:--.---" FontSize="25" FontWeight="SemiBold"/><TextBlock Name="LapDelta" Text="—" FontSize="14"/></StackPanel>
+    <StackPanel><TextBlock Text="S1" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S0" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D0" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
+    <StackPanel><TextBlock Text="S2" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S1" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D1" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
+    <StackPanel><TextBlock Text="S3" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S2" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D2" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
+    <StackPanel><TextBlock Text="КРУГ" FontSize="13"/><TextBlock Name="Lap" Text="--:--.---" FontSize="25" FontWeight="SemiBold"/><TextBlock Name="LapDelta" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
    </UniformGrid>
-   <DockPanel Margin="0,9,0,0"><TextBlock Name="Best" Text="BEST  --:--.---" FontSize="15"/><TextBlock Name="Laps" Text="КРУГОВ  0" FontSize="15" HorizontalAlignment="Right"/></DockPanel>
-   <DockPanel Name="DeltaRow" Margin="0,4,0,0"><TextBlock Text="Δ К ПРОШЛОМУ КРУГУ" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="Delta" Text="—" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Right"/></DockPanel>
-   <Button Name="SettingsButton" Content="⚙ Настройки" HorizontalAlignment="Left" Margin="0,7,0,0" Padding="7,2" FontSize="12" Foreground="White" Background="#402D3645" BorderBrush="#68788D" Cursor="Hand" ToolTip="Затемнение фона и отображение дельты"/>
+   <DockPanel Margin="0,9,0,0"><TextBlock Name="Best" Text="BEST  --:--.--- / --:--.---" FontSize="17"/><TextBlock Name="Laps" Text="КРУГОВ  0" FontSize="15" HorizontalAlignment="Right"/></DockPanel>
+   <StackPanel Name="LastLapRow" Orientation="Horizontal" Margin="0,4,0,0"><TextBlock Text="ПРОШЛЫЙ КРУГ  " FontSize="16"/><TextBlock Name="LastLap" Text="--:--.---" FontSize="17" FontWeight="SemiBold"/></StackPanel>
+   <Button Name="SettingsButton" Content="⚙ Настройки" HorizontalAlignment="Left" Margin="0,7,0,0" Padding="7,2" FontSize="12" Foreground="White" Background="#402D3645" BorderBrush="#68788D" Cursor="Hand" ToolTip="Затемнение фона и отображение прошлого круга"/>
   </StackPanel>
  </Border>
 </Window>
 '@
 $window=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
-$controls=@{}; @('State','S0','S1','S2','D0','D1','D2','Best','Laps','Delta','Lap','LapDelta','PanelBackground','DeltaRow','SettingsButton') | ForEach-Object { $controls[$_]=$window.FindName($_) }
+$controls=@{}; @('State','S0','S1','S2','D0','D1','D2','Best','Laps','LastLap','Lap','LapDelta','PanelBackground','LastLapRow','SettingsButton') | ForEach-Object { $controls[$_]=$window.FindName($_) }
 $script:preferencesPath=Join-Path $PSScriptRoot 'preferences.json'
-$script:preferences=@{ BackgroundOpacity=0.30; ShowDelta=$true }
+$script:preferences=@{ BackgroundOpacity=0.30; ShowLastLap=$true }
 if (Test-Path -LiteralPath $script:preferencesPath) {
     try {
         $saved=Get-Content -LiteralPath $script:preferencesPath -Raw | ConvertFrom-Json
@@ -115,7 +116,7 @@ if (Test-Path -LiteralPath $script:preferencesPath) {
             $opacity=[double]$saved.BackgroundOpacity
             if (-not [double]::IsNaN($opacity) -and -not [double]::IsInfinity($opacity)) { $script:preferences.BackgroundOpacity=[Math]::Max(0,[Math]::Min(1,$opacity)) }
         }
-        if ($saved.ShowDelta -is [bool]) { $script:preferences.ShowDelta=$saved.ShowDelta }
+        if ($saved.ShowLastLap -is [bool]) { $script:preferences.ShowLastLap=$saved.ShowLastLap }
     } catch { Write-Warning 'Не удалось прочитать настройки. Используются значения по умолчанию.' }
 }
 function Save-Preferences {
@@ -125,8 +126,8 @@ function Save-Preferences {
 function Apply-Preferences {
     $alpha=[byte][Math]::Round(255*$script:preferences.BackgroundOpacity)
     $controls.PanelBackground.Background=New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromArgb($alpha,20,24,32))
-    $controls.DeltaRow.Visibility=if ($script:preferences.ShowDelta) { 'Visible' } else { 'Collapsed' }
-    $window.Height=if ($script:preferences.ShowDelta) { 206 } else { 184 }
+    $controls.LastLapRow.Visibility=if ($script:preferences.ShowLastLap) { 'Visible' } else { 'Collapsed' }
+    $window.Height=if ($script:preferences.ShowLastLap) { 224 } else { 199 }
 }
 Apply-Preferences
 $script:settingsWindow=$null
@@ -139,8 +140,8 @@ function Show-OverlaySettings {
   <DockPanel><TextBlock Text="Затемнение фона"/><TextBlock Name="OpacityValue" HorizontalAlignment="Right"/></DockPanel>
   <Slider Name="OpacitySlider" Minimum="0" Maximum="100" TickFrequency="5" SmallChange="1" LargeChange="10" Margin="0,10,0,3"/>
   <TextBlock Text="0% — прозрачный · 100% — непрозрачный" FontSize="12" Foreground="#D7DFEB" Margin="0,0,0,20"/>
-  <CheckBox Name="ShowDeltaToggle" Content="Показывать нижнюю строку дельты" Foreground="White"/>
-  <TextBlock Text="Сравнение с прошлым кругом продолжает записываться, даже когда строка скрыта." TextWrapping="Wrap" FontSize="12" Foreground="#D7DFEB" Margin="23,7,0,15"/>
+  <CheckBox Name="ShowLastLapToggle" Content="Показывать прошлый круг" Foreground="White"/>
+  <TextBlock Text="Время последнего завершённого круга под строкой BEST." TextWrapping="Wrap" FontSize="12" Foreground="#D7DFEB" Margin="23,7,0,15"/>
   <TextBlock Text="Изменения применяются и сохраняются сразу." TextWrapping="Wrap" FontSize="12" Margin="0,0,0,16"/>
   <Button Name="DoneButton" Content="Готово" HorizontalAlignment="Right" Padding="20,6" MinWidth="90"/>
  </StackPanel>
@@ -149,17 +150,17 @@ function Show-OverlaySettings {
     $script:settingsWindow=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $settingsXaml))
     $script:settingsWindow.Owner=$window
     $script:settingsControls=@{}
-    @('OpacityValue','OpacitySlider','ShowDeltaToggle','DoneButton') | ForEach-Object { $script:settingsControls[$_]=$script:settingsWindow.FindName($_) }
+    @('OpacityValue','OpacitySlider','ShowLastLapToggle','DoneButton') | ForEach-Object { $script:settingsControls[$_]=$script:settingsWindow.FindName($_) }
     $script:settingsControls.OpacitySlider.Value=$script:preferences.BackgroundOpacity*100
     $script:settingsControls.OpacityValue.Text=('{0:0}%' -f ($script:preferences.BackgroundOpacity*100))
-    $script:settingsControls.ShowDeltaToggle.IsChecked=$script:preferences.ShowDelta
+    $script:settingsControls.ShowLastLapToggle.IsChecked=$script:preferences.ShowLastLap
     $script:settingsControls.OpacitySlider.Add_ValueChanged({
         $script:preferences.BackgroundOpacity=[double]$_.NewValue/100
         $script:settingsControls.OpacityValue.Text=('{0:0}%' -f $_.NewValue)
         Apply-Preferences; Save-Preferences
     })
-    $script:settingsControls.ShowDeltaToggle.Add_Click({
-        $script:preferences.ShowDelta=[bool]$script:settingsControls.ShowDeltaToggle.IsChecked
+    $script:settingsControls.ShowLastLapToggle.Add_Click({
+        $script:preferences.ShowLastLap=[bool]$script:settingsControls.ShowLastLapToggle.IsChecked
         Apply-Preferences; Save-Preferences
     })
     $script:settingsControls.DoneButton.Add_Click({ $script:settingsWindow.Close() })
@@ -169,17 +170,22 @@ function Show-OverlaySettings {
 }
 $controls.SettingsButton.Add_Click({ Show-OverlaySettings })
 $reader=New-Object AccOverlay.Reader; $timing=New-Object AccOverlay.Timing
+. (Join-Path $PSScriptRoot 'BroadcastConfig.ps1')
+$broadcast=if ($Demo -or $Preview) { New-Object AccOverlay.Broadcast(0,'') } else { Initialize-LocalBroadcast }
 function Get-DemoFrame([long]$clock) {
     $f=New-Object AccOverlay.Frame
-    $f.Status=2; $f.Current=[int]($clock % 90000); $f.Laps=[int][Math]::Floor($clock/90000.0)
-    $f.Sector=[int][Math]::Floor($f.Current/30000.0); $f.Position=$f.Current/90000.0
-    $f.Split=if ($f.Sector -eq 1) { 30000 } elseif ($f.Laps -gt 0 -or $f.Sector -eq 2) { 60000 } else { 0 }
-    $f.Last=if ($f.Laps -gt 0) { 90000 } else { 0 }; $f.Best=$f.Last
+    $f.Status=2
+    if ($clock -lt 93000) { $f.Laps=0; $f.Current=[int]$clock; $duration=93000; $secondSplit=61000 }
+    else { $f.Laps=1+[int][Math]::Floor(($clock-93000)/90000.0); $f.Current=[int](($clock-93000) % 90000); $duration=90000; $secondSplit=60000 }
+    $f.Sector=if ($f.Current -lt 30000) { 0 } elseif ($f.Current -lt $secondSplit) { 1 } else { 2 }
+    $f.Position=$f.Current/[double]$duration
+    $f.Split=if ($f.Sector -eq 1) { 30000 } elseif ($f.Sector -eq 2) { $secondSplit } else { 0 }
+    $f.Last=if ($f.Laps -ge 2) { 90000 } elseif ($f.Laps -eq 1) { 93000 } else { 0 }; $f.Best=$f.Last
     return $f
 }
 if ($Preview) { $Demo=$true }
 if ($Demo) {
-    for ($demoSeed=0; $demoSeed -le 90000; $demoSeed+=500) { $timing.Update((Get-DemoFrame $demoSeed),[long]$demoSeed) }
+    for ($demoSeed=0; $demoSeed -le 183000; $demoSeed+=500) { $timing.Update((Get-DemoFrame $demoSeed),[long]$demoSeed) }
     $demoClock=[Diagnostics.Stopwatch]::StartNew()
 }
 $window.Left=40; $window.Top=160
@@ -195,7 +201,7 @@ $timer=New-Object Windows.Threading.DispatcherTimer; $timer.Interval=[TimeSpan]:
 $timer.Add_Tick({
  try {
     if ($Demo) {
-        $demoTime=90000+$demoClock.ElapsedMilliseconds
+        $demoTime=183000+$demoClock.ElapsedMilliseconds
         $timing.Update((Get-DemoFrame $demoTime),[long]$demoTime)
         $display=$timing.GetDisplay([long]$demoTime); $controls.State.Text='ДЕМО'
     } else {
@@ -207,6 +213,7 @@ $timer.Add_Tick({
         $display=$timing.GetDisplay()
         $controls.State.Text= switch ($f.Status) { 0 {'ОЖИДАНИЕ ACC'} 1 {'ПОВТОР'} 2 {'LIVE'} 3 {'ПАУЗА'} default {'ОЖИДАНИЕ ACC'} }
     }
+    if (-not $Demo) { $broadcast.Poll() }
     if ($display.Holding) { $controls.State.Text=if ($Demo) { 'ДЕМО / ФИНИШ' } else { 'ФИНИШ / 5 С' } }
     for ($i=0;$i -lt 3;$i++) {
         $controls["S$i"].Text=if ($display.Sectors[$i] -gt 0 -or $display.ActiveSector -eq $i) { ($display.Sectors[$i]/1000.0).ToString('0.000',[Globalization.CultureInfo]::InvariantCulture) } else { '--.---' }
@@ -215,15 +222,19 @@ $timer.Add_Tick({
     $controls.Lap.Text=if ($display.Lap -eq 0 -and $display.ActiveSector -ge 0) { '0:00.000' } else { [AccOverlay.Timing]::Time($display.Lap) }
     $controls.LapDelta.Text=[AccOverlay.Timing]::Delta($display.LapDelta); $controls.LapDelta.Foreground=Color $display.LapDelta
     $bestLabel=if ($timing.BestIsObserved) { 'BEST*  ' } else { 'BEST  ' }
-    $controls.Best.Text=$bestLabel+[AccOverlay.Timing]::Time($timing.Best); $controls.Laps.Text='КРУГОВ  '+$timing.Laps
-    $controls.Best.ToolTip=if ($timing.BestIsObserved) { 'Лучший замеченный круг. ACC пока не передал официальный лучший; круг может быть недействительным.' } else { 'Лучший действительный круг сессии: данные ACC или полный действительный круг, записанный оверлеем.' }
-    $shownDelta=if ($display.Holding) { $timing.LapDifference } else { $timing.LiveDifference }
-    $controls.Delta.Text=if ($null -ne $shownDelta) { [AccOverlay.Timing]::Delta($shownDelta) } elseif ($display.Holding) { 'ПЕРВЫЙ КРУГ' } elseif ($timing.HasReference) { 'НЕТ ДАННЫХ В ТОЧКЕ' } elseif ($null -eq $f -and -not $Demo) { '—' } else { 'ЗАПИСЬ КРУГА' }
-    $controls.Delta.Foreground=Color $shownDelta
-    $controls.Delta.ToolTip='Сравнение с предыдущим кругом в той же точке трассы. Для отсутствующих точек сначала нужно записать круг. После финиша 5 секунд показана разница полных кругов.'
+    $sessionBest=if ($Demo) { 89000 } elseif ($broadcast.Fresh) { $broadcast.Best } else { 0 }
+    $sessionText=if ($sessionBest -gt 0) { [AccOverlay.Timing]::Time($sessionBest) } elseif ($script:broadcastRestartRequired -and -not $broadcast.Fresh) { 'ПЕРЕЗАПУСТИ ACC' } elseif (-not $Demo -and -not $broadcast.Fresh) { 'НЕТ СВЯЗИ' } else { '--:--.---' }
+    $controls.Best.Text=$bestLabel+[AccOverlay.Timing]::Time($timing.Best)+' / '+$sessionText
+    $controls.Laps.Text='КРУГОВ  '+$timing.Laps
+    $sessionHint=if ($script:broadcastRestartRequired -and -not $broadcast.Fresh) { 'Перезапустите ACC для получения лучшего круга заезда.' } else { $broadcast.Status }
+    $controls.Best.ToolTip='Слева — мой лучший круг; справа — лучший действительный круг среди всех участников текущей сессии. '+$sessionHint
+    if ($timing.BestIsObserved) { $controls.Best.ToolTip+=' BEST* — замеченный круг, действительность которого ещё не подтверждена.' }
+    $controls.LastLap.Text=[AccOverlay.Timing]::Time($timing.LastLap)
+    for ($i=0;$i -lt 3;$i++) { $controls["D$i"].ToolTip='Разница этого сектора с тем же сектором предыдущего круга. После финиша показывается 5 секунд, затем очищается для нового круга.' }
+    $controls.LapDelta.ToolTip=if ($display.Holding) { 'Разница последних двух завершённых кругов.' } else { 'Текущая разница с предыдущим кругом в той же точке трассы; прочерк означает отсутствие записи для сравнения.' }
  } catch { $controls.State.Text='ОШИБКА ДАННЫХ'; Write-Warning $_ }
 })
-$window.Add_Closed({ $timer.Stop(); $reader.Dispose(); try { @{Left=$window.Left;Top=$window.Top} | ConvertTo-Json | Set-Content $settings } catch {} })
+$window.Add_Closed({ $timer.Stop(); $reader.Dispose(); $broadcast.Dispose(); try { @{Left=$window.Left;Top=$window.Top} | ConvertTo-Json | Set-Content $settings } catch {} })
 if ($Preview) {
     $Demo=$true
     $window.Add_ContentRendered({

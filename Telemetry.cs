@@ -60,7 +60,6 @@ namespace AccOverlay {
   int pendingLast;
   bool pendingFull, pendingValid;
   int pendingSector;
-  int splitBeforeBoundary;
   int[] completedDisplay;
   int?[] completedDifferences;
   long holdUntil;
@@ -78,13 +77,13 @@ namespace AccOverlay {
   public void Update(Frame f,long now) {
    if(f.Status==0) { Reset(); return; }
    if(f.Status==1) { Reset(); return; }
-   if(prior!=null && (f.Session!=prior.Session || f.SessionIndex!=prior.SessionIndex || f.Laps<prior.Laps || f.Remaining>prior.Remaining+5)) Reset();
+   if(prior!=null && (f.Session!=prior.Session || f.SessionIndex!=prior.SessionIndex || f.Laps<prior.Laps)) Reset();
    // Position/clock can wrap a packet before the completed-lap counter does.
    if(prior!=null && f.Laps==prior.Laps && prior.Position>0.98f && f.Position<0.02f) {
     if(wrapWaitSince<0) wrapWaitSince=now;
     if(now-wrapWaitSince<1000) return;
    } else wrapWaitSince=-1;
-   Laps=f.Laps; LastLap=f.Last>0?f.Last:0;
+   Laps=f.Laps; if(f.Last>0 && f.Last<int.MaxValue) LastLap=f.Last;
    if(f.Best>0 && f.Best<int.MaxValue) officialBest=f.Best;
    if(prior!=null && f.Laps==prior.Laps && f.Current+1000<prior.Current) {
     // A return to the garage/restart is not a completed lap.
@@ -102,10 +101,10 @@ namespace AccOverlay {
      pendingSectors=(int[])lapSectors.Clone(); pendingLast=prior.Last;
      holdUntil=now+5000;
      lapSectors=new int[3]; pendingSector=0;
-    } else if(f.Laps>prior.Laps+1) { Previous=new int[3]; Sectors=new int[3]; lapSectors=new int[3]; pendingSectors=null; pendingSector=0; Differences=new int?[3]; previousLap=f.Last; LapDifference=null; }
+    } else if(f.Laps>prior.Laps+1) { Previous=new int[3]; Sectors=new int[3]; lapSectors=new int[3]; pendingSectors=completedDisplay=null; holdUntil=0; pendingSector=0; Differences=new int?[3]; positions.Clear(); times.Clear(); referencePositions=new float[0]; referenceTimes=new int[0]; fullLap=false; previousLap=f.Last; LapDifference=null; }
     else if(f.Sector!=prior.Sector && f.Sector>0 && f.Sector<=2 && f.Sector==prior.Sector+1) {
      if(f.Sector==1) { Sectors=new int[3]; Differences=new int?[3]; }
-     pendingSector=f.Sector; splitBeforeBoundary=prior.Split;
+     pendingSector=f.Sector;
     }
    } else {
     previousLap=f.Last>0?f.Last:0;
@@ -115,10 +114,10 @@ namespace AccOverlay {
     if(f.Sector==1 && f.Split>0 && f.Split<=f.Current) { lapSectors[0]=f.Split; Record(0,f.Split); }
    }
    // ACC publishes cumulative split times; wait if the split lags the sector index.
-   if(pendingSector==f.Sector && pendingSector>0 && f.Split>0 && f.Split!=splitBeforeBoundary && (f.Current==0 || f.Split<=f.Current)) {
+   if(pendingSector==f.Sector && pendingSector>0 && f.Split>0 && (f.Current==0 || f.Split<=f.Current)) {
     if(pendingSector==1) { lapSectors[0]=f.Split; Record(0,f.Split); }
     else if(lapSectors[0]>0 && f.Split>lapSectors[0]) { lapSectors[1]=f.Split-lapSectors[0]; Record(1,lapSectors[1]); }
-    pendingSector=0;
+    if((pendingSector==1 && lapSectors[0]>0) || (pendingSector==2 && lapSectors[1]>0)) pendingSector=0;
    }
    // The lap counter can arrive before the final lap time.
    if(pendingSectors!=null && f.Last>0 && (f.Last!=pendingLast || f.Current>=300)) {
