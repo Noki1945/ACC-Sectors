@@ -10,6 +10,8 @@ namespace AccOverlay {
   public int Packet, Status, Session, Laps, Current, Last, Best, Sector, Split;
   public float Remaining, Position;
   public int SessionIndex;
+  public int GapAhead, GapBehind;
+  public int PlayerCarId;
   public bool Valid=true;
  }
  public sealed class Reader : IDisposable {
@@ -22,10 +24,10 @@ namespace AccOverlay {
    if(view==IntPtr.Zero) {
     handle=OpenFileMapping(4,false,"Local\\acpmf_graphics");
     if(handle==IntPtr.Zero) return null;
-    view=MapViewOfFile(handle,4,0,0,new UIntPtr(1412));
+    view=MapViewOfFile(handle,4,0,0,new UIntPtr(1588));
     if(view==IntPtr.Zero) { Dispose(); return null; }
    }
-   byte[] b=new byte[1412];
+   byte[] b=new byte[1588];
    for(int retry=0;retry<3;retry++) {
     int packet=Marshal.ReadInt32(view);
     Marshal.Copy(view,b,0,b.Length);
@@ -38,7 +40,7 @@ namespace AccOverlay {
    if(b==null || b.Length<1412) throw new ArgumentException("Incomplete ACC graphics page");
    int best=BitConverter.ToInt32(b,148);
    if(best<=0 || best==int.MaxValue) best=ParseTime(Encoding.Unicode.GetString(b,72,30).TrimEnd('\0'));
-   return new Frame { Packet=BitConverter.ToInt32(b,0),Status=BitConverter.ToInt32(b,4),Session=BitConverter.ToInt32(b,8),Laps=BitConverter.ToInt32(b,132),Current=BitConverter.ToInt32(b,140),Last=BitConverter.ToInt32(b,144),Best=best,Remaining=BitConverter.ToSingle(b,152),Sector=BitConverter.ToInt32(b,164),Split=BitConverter.ToInt32(b,168),Position=BitConverter.ToSingle(b,248),SessionIndex=BitConverter.ToInt32(b,1320),Valid=BitConverter.ToInt32(b,1408)!=0 };
+   return new Frame { Packet=BitConverter.ToInt32(b,0),Status=BitConverter.ToInt32(b,4),Session=BitConverter.ToInt32(b,8),Laps=BitConverter.ToInt32(b,132),Current=BitConverter.ToInt32(b,140),Last=BitConverter.ToInt32(b,144),Best=best,Remaining=BitConverter.ToSingle(b,152),Sector=BitConverter.ToInt32(b,164),Split=BitConverter.ToInt32(b,168),Position=BitConverter.ToSingle(b,248),SessionIndex=BitConverter.ToInt32(b,1320),Valid=BitConverter.ToInt32(b,1408)!=0,PlayerCarId=BitConverter.ToInt32(b,1216),GapAhead=b.Length>=1588?BitConverter.ToInt32(b,1580):0,GapBehind=b.Length>=1588?BitConverter.ToInt32(b,1584):0 };
   }
   public static int ParseTime(string text) {
    TimeSpan value;
@@ -228,6 +230,7 @@ namespace AccOverlay {
   }
   public static string Time(int ms) { return ms<=0?"--:--.---":string.Format("{0}:{1:00}.{2:000}",ms/60000,(ms/1000)%60,ms%1000); }
   public static string Delta(int? ms) { return ms.HasValue?string.Format(System.Globalization.CultureInfo.InvariantCulture,"{0:+0.000;-0.000;0.000}",ms.Value/1000.0):"—"; }
+  public static string Gap(int ms) { if(ms==0 || ms==-1 || ms==int.MaxValue || ms==int.MinValue) return "—"; int magnitude=Math.Abs(ms); return magnitude>=60000?Time(magnitude):(magnitude/1000.0).ToString("0.000",CultureInfo.InvariantCulture); }
  }
  public sealed class Display {
   public int[] Sectors=new int[3];

@@ -1,3 +1,18 @@
+# Decode and format the two independent ACC gaps without swapping directions.
+$gapPage=New-Object byte[] 1588
+[BitConverter]::GetBytes([int]2).CopyTo($gapPage,4)
+[BitConverter]::GetBytes([int]1234).CopyTo($gapPage,1580)
+[BitConverter]::GetBytes([int]875).CopyTo($gapPage,1584)
+[BitConverter]::GetBytes([int]42).CopyTo($gapPage,1216)
+$gapFrame=[AccOverlay.Reader]::Decode($gapPage)
+if ($gapFrame.GapAhead -ne 1234 -or $gapFrame.GapBehind -ne 875 -or [AccOverlay.Timing]::Gap($gapFrame.GapAhead) -ne '1.234' -or [AccOverlay.Timing]::Gap($gapFrame.GapBehind) -ne '0.875') { throw 'Front/rear gap decoding or units failed' }
+if ($gapFrame.PlayerCarId -ne 42) { throw 'Player identity offset failed' }
+if ([AccOverlay.Timing]::Gap(61001) -ne '1:01.001') { throw 'Long gap formatting failed' }
+if ([AccOverlay.Timing]::Gap(-19398) -ne '19.398') { throw 'Signed rear gap must display its magnitude' }
+foreach ($missing in @(0,-1,[int]::MaxValue,[int]::MinValue)) { if ([AccOverlay.Timing]::Gap($missing) -ne [string][char]0x2014) { throw 'Missing gap must not display zero or an invalid number' } }
+$oldGapFrame=[AccOverlay.Reader]::Decode((New-Object byte[] 1412))
+if ($oldGapFrame.GapAhead -ne 0 -or $oldGapFrame.GapBehind -ne 0) { throw 'Short graphics snapshot must leave gaps unavailable' }
+
 # Own lap records must survive missing split fields and sparse position samples.
 function Sample($laps,$sector,$current,$last,$position) {
     $f=Frame $laps $sector 0 $last; $f.Current=$current; $f.Position=$position; return $f
@@ -114,3 +129,37 @@ try {
     $broadcast.Process((New-BroadcastPacket 88000 2))
     if ($broadcast.Best -ne 88000) { throw 'New session best failed' }
 } finally { $broadcast.Dispose(); $server.Close() }
+
+# Track neighbors must be chosen independently of race rank and lap count.
+function New-TrafficPacket([int]$id,[single]$spline,[int]$laps,[int]$rank,[int]$location=1) {
+    $stream=New-Object IO.MemoryStream; $w=New-Object IO.BinaryWriter($stream)
+    $w.Write([byte]3); $w.Write([uint16]$id); $w.Write([uint16]0); $w.Write([byte]1); $w.Write([byte]2)
+    1..3 | ForEach-Object { $w.Write([single]0) }
+    $w.Write([byte]$location); $w.Write([uint16]0); $w.Write([uint16]$rank); $w.Write([uint16]$rank); $w.Write([uint16]1)
+    $w.Write($spline); $w.Write([uint16]$laps); $w.Write([int]0)
+    1..3 | ForEach-Object {
+        $w.Write([int]100000); $w.Write([uint16]$id); $w.Write([uint16]0); $w.Write([byte]0)
+        $w.Write([byte]0); $w.Write([byte]1); $w.Write([byte]0); $w.Write([byte]0)
+    }
+    $packet=$stream.ToArray(); $w.Dispose(); $stream.Dispose(); return ,$packet
+}
+$trafficClient=New-Object AccOverlay.Broadcast(0,'')
+try {
+    $trafficClient.Process((New-BroadcastPacket 100000))
+    $trafficClient.Process((New-TrafficPacket 42 0.5 10 8))
+    $trafficClient.Process((New-TrafficPacket 7 0.49 99 1))
+    $trafficClient.Process((New-TrafficPacket 8 0.51 0 99))
+    $trafficClient.Process((New-TrafficPacket 9 0.8 10 7))
+    $trafficClient.Process((New-TrafficPacket 10 0.5005 10 9 2))
+    $pair=$trafficClient.GetTraffic(42,100000)
+    if ($pair.AheadId -ne 8 -or $pair.BehindId -ne 7 -or [Math]::Abs($pair.AheadSeconds-1) -gt 0.001 -or [Math]::Abs($pair.BehindSeconds-1) -gt 0.001) { throw 'Lapped cars or race ranks incorrectly affected track neighbors' }
+    if ($null -ne $trafficClient.GetTraffic(999,100000).AheadId) { throw 'Unknown player identity must not guess a focused car' }
+    $trafficClient.Process((New-BroadcastPacket 100000 2))
+    $trafficClient.Process((New-TrafficPacket 42 0.99 10 8))
+    $trafficClient.Process((New-TrafficPacket 20 0.01 0 99))
+    $trafficClient.Process((New-TrafficPacket 21 0.97 99 1))
+    $pair=$trafficClient.GetTraffic(42,100000)
+    if ($pair.AheadId -ne 20 -or $pair.BehindId -ne 21 -or [Math]::Abs($pair.AheadSeconds-2) -gt 0.001) { throw 'Start/finish wrap selected the wrong track neighbor' }
+    $trafficClient.Process((New-BroadcastPacket 100000 3))
+    if ($null -ne $trafficClient.GetTraffic(42,100000).AheadId) { throw 'Old traffic leaked into the next session' }
+} finally { $trafficClient.Dispose() }

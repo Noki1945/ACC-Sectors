@@ -91,7 +91,16 @@ Add-Type -AssemblyName PresentationFramework
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="516" Height="190" WindowStyle="None" AllowsTransparency="True" Background="Transparent" Topmost="True" ResizeMode="NoResize" ShowInTaskbar="True" Title="ACC Sectors" FontFamily="Segoe UI" Foreground="#FFFFFF">
  <Border Name="PanelBackground" Background="#4D141820" CornerRadius="12" BorderBrush="#39414F" BorderThickness="1" Padding="13,9">
   <StackPanel>
-   <DockPanel Margin="0,0,0,7"><TextBlock Text="ACC / SECTORS" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="State" Text="ОЖИДАНИЕ ACC" FontSize="13" HorizontalAlignment="Right" Foreground="#FFFFFF"/></DockPanel>
+   <Grid Margin="0,0,0,7">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <TextBlock Text="ACC / SECTORS" FontSize="13" Foreground="#FFFFFF"/>
+    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="8,0">
+     <TextBlock Name="GapAhead" Text="↑ —" FontSize="13" Foreground="White" ToolTip="Ближайшая машина впереди на трассе независимо от позиции и количества кругов. ≈ — оценка секунд по расстоянию вдоль трассы."/>
+     <TextBlock Text=" / " FontSize="13" Foreground="White" Margin="5,0"/>
+     <TextBlock Name="GapBehind" Text="↓ —" FontSize="13" Foreground="White" ToolTip="Ближайшая машина сзади на трассе независимо от позиции и количества кругов. ≈ — оценка секунд по расстоянию вдоль трассы."/>
+    </StackPanel>
+    <TextBlock Grid.Column="2" Name="State" Text="ОЖИДАНИЕ ACC" FontSize="13" HorizontalAlignment="Right" Foreground="#FFFFFF"/>
+   </Grid>
    <UniformGrid Columns="4">
     <StackPanel><TextBlock Text="S1" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S0" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D0" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
     <StackPanel><TextBlock Text="S2" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S1" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D1" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
@@ -106,7 +115,7 @@ Add-Type -AssemblyName PresentationFramework
 </Window>
 '@
 $window=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
-$controls=@{}; @('State','S0','S1','S2','D0','D1','D2','Best','Laps','LastLap','Lap','LapDelta','Forecast','PanelBackground','LastLapRow','SettingsButton') | ForEach-Object { $controls[$_]=$window.FindName($_) }
+$controls=@{}; @('State','GapAhead','GapBehind','S0','S1','S2','D0','D1','D2','Best','Laps','LastLap','Lap','LapDelta','Forecast','PanelBackground','LastLapRow','SettingsButton') | ForEach-Object { $controls[$_]=$window.FindName($_) }
 $script:preferencesPath=Join-Path $PSScriptRoot 'preferences.json'
 $script:preferences=@{ BackgroundOpacity=0.30; ShowLastLap=$true }
 if (Test-Path -LiteralPath $script:preferencesPath) {
@@ -207,14 +216,23 @@ $timer.Add_Tick({
         $display=$timing.GetDisplay([long]$demoTime); $controls.State.Text='ДЕМО'
     } else {
         $f=$reader.Read()
-        if ($null -eq $f) { $controls.State.Text='ОЖИДАНИЕ ACC'; return }
+        if ($null -eq $f) { $controls.State.Text='ОЖИДАНИЕ ACC'; $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —'; return }
         if ($script:lastPacket -ne $f.Packet) { $script:lastChange=[DateTime]::UtcNow; $script:lastPacket=$f.Packet }
-        if (([DateTime]::UtcNow-$script:lastChange).TotalSeconds -gt 5) { $controls.State.Text='НЕТ ТЕЛЕМЕТРИИ'; $reader.Dispose(); return }
+        if (([DateTime]::UtcNow-$script:lastChange).TotalSeconds -gt 5) { $controls.State.Text='НЕТ ТЕЛЕМЕТРИИ'; $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —'; $reader.Dispose(); return }
         $timing.Update($f)
         $display=$timing.GetDisplay()
         $controls.State.Text= switch ($f.Status) { 0 {'ОЖИДАНИЕ ACC'} 1 {'ПОВТОР'} 2 {'LIVE'} 3 {'ПАУЗА'} default {'ОЖИДАНИЕ ACC'} }
     }
     if (-not $Demo) { $broadcast.Poll() }
+    if ($Demo) { $controls.GapAhead.Text='↑ ≈1.234'; $controls.GapBehind.Text='↓ ≈0.875' }
+    elseif ($f.Status -eq 2 -or $f.Status -eq 3) {
+        $traffic=$broadcast.GetTraffic($f.PlayerCarId,$timing.LastLap)
+        $controls.GapAhead.Text='↑ '+[AccOverlay.TrafficPair]::Format($traffic.AheadSeconds,$traffic.AheadMeters)
+        $controls.GapBehind.Text='↓ '+[AccOverlay.TrafficPair]::Format($traffic.BehindSeconds,$traffic.BehindMeters)
+        $controls.GapAhead.ToolTip='Ближайшая впереди на трассе, включая круговых. ≈ — оценка времени по положению на трассе и времени круга. '+$broadcast.Status
+        $controls.GapBehind.ToolTip='Ближайшая сзади на трассе, включая круговых. ≈ — оценка времени по положению на трассе и времени круга. '+$broadcast.Status
+    }
+    else { $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —' }
     if ($display.Holding) { $controls.State.Text=if ($Demo) { 'ДЕМО / ФИНИШ' } else { 'ФИНИШ / 5 С' } }
     for ($i=0;$i -lt 3;$i++) {
         $controls["S$i"].Text=if ($display.Sectors[$i] -gt 0 -or $display.ActiveSector -eq $i) { ($display.Sectors[$i]/1000.0).ToString('0.000',[Globalization.CultureInfo]::InvariantCulture) } else { '--.---' }
