@@ -96,17 +96,17 @@ Add-Type -AssemblyName PresentationFramework
     <StackPanel><TextBlock Text="S1" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S0" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D0" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
     <StackPanel><TextBlock Text="S2" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S1" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D1" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
     <StackPanel><TextBlock Text="S3" FontSize="13" Foreground="#FFFFFF"/><TextBlock Name="S2" Text="--.---" FontSize="26" FontWeight="SemiBold"/><TextBlock Name="D2" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
-    <StackPanel><TextBlock Text="КРУГ" FontSize="13"/><TextBlock Name="Lap" Text="--:--.---" FontSize="25" FontWeight="SemiBold"/><TextBlock Name="LapDelta" Text="—" FontSize="22" FontWeight="SemiBold"/></StackPanel>
+    <StackPanel><TextBlock Text="КРУГ" FontSize="13"/><TextBlock Name="Lap" Text="--:--.---" FontSize="25" FontWeight="SemiBold"/><TextBlock Name="LapDelta" Text="—" FontSize="22" FontWeight="SemiBold"/><TextBlock Name="Forecast" Text="ПРОГН. —" FontSize="12" Margin="0,3,0,0"/></StackPanel>
    </UniformGrid>
-   <DockPanel Margin="0,9,0,0"><TextBlock Name="Best" Text="BEST  --:--.--- / --:--.---" FontSize="17"/><TextBlock Name="Laps" Text="КРУГОВ  0" FontSize="15" HorizontalAlignment="Right"/></DockPanel>
-   <StackPanel Name="LastLapRow" Orientation="Horizontal" Margin="0,4,0,0"><TextBlock Text="ПРОШЛЫЙ КРУГ  " FontSize="16"/><TextBlock Name="LastLap" Text="--:--.---" FontSize="17" FontWeight="SemiBold"/></StackPanel>
+   <TextBlock Name="Best" Text="BEST  --:--.--- / --:--.---" FontSize="17" Margin="0,9,0,0"/>
+   <DockPanel Margin="0,4,0,0"><StackPanel Name="LastLapRow" Orientation="Horizontal"><TextBlock Text="ПРОШЛЫЙ КРУГ  " FontSize="16"/><TextBlock Name="LastLap" Text="--:--.---" FontSize="17" FontWeight="SemiBold"/></StackPanel><TextBlock Name="Laps" Text="КРУГОВ  0" FontSize="15" HorizontalAlignment="Right"/></DockPanel>
    <Button Name="SettingsButton" Content="⚙ Настройки" HorizontalAlignment="Left" Margin="0,7,0,0" Padding="7,2" FontSize="12" Foreground="White" Background="#402D3645" BorderBrush="#68788D" Cursor="Hand" ToolTip="Затемнение фона и отображение прошлого круга"/>
   </StackPanel>
  </Border>
 </Window>
 '@
 $window=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
-$controls=@{}; @('State','S0','S1','S2','D0','D1','D2','Best','Laps','LastLap','Lap','LapDelta','PanelBackground','LastLapRow','SettingsButton') | ForEach-Object { $controls[$_]=$window.FindName($_) }
+$controls=@{}; @('State','S0','S1','S2','D0','D1','D2','Best','Laps','LastLap','Lap','LapDelta','Forecast','PanelBackground','LastLapRow','SettingsButton') | ForEach-Object { $controls[$_]=$window.FindName($_) }
 $script:preferencesPath=Join-Path $PSScriptRoot 'preferences.json'
 $script:preferences=@{ BackgroundOpacity=0.30; ShowLastLap=$true }
 if (Test-Path -LiteralPath $script:preferencesPath) {
@@ -127,7 +127,7 @@ function Apply-Preferences {
     $alpha=[byte][Math]::Round(255*$script:preferences.BackgroundOpacity)
     $controls.PanelBackground.Background=New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromArgb($alpha,20,24,32))
     $controls.LastLapRow.Visibility=if ($script:preferences.ShowLastLap) { 'Visible' } else { 'Collapsed' }
-    $window.Height=if ($script:preferences.ShowLastLap) { 224 } else { 199 }
+    $window.Height=244
 }
 Apply-Preferences
 $script:settingsWindow=$null
@@ -197,6 +197,7 @@ $menu=New-Object Windows.Controls.ContextMenu
 $close=New-Object Windows.Controls.MenuItem; $close.Header='Закрыть'; $close.Add_Click({$window.Close()}); [void]$menu.Items.Add($close); $window.ContextMenu=$menu
 function Color($delta) { if ($null -eq $delta -or [Math]::Abs($delta) -le 20) { '#FFFFFF' } elseif ($delta -lt 0) { '#50E3A4' } else { '#FF6B7A' } }
 $script:lastPacket=$null; $script:lastChange=[DateTime]::UtcNow
+$script:lastDiagnostic=[DateTime]::MinValue
 $timer=New-Object Windows.Threading.DispatcherTimer; $timer.Interval=[TimeSpan]::FromMilliseconds(16)
 $timer.Add_Tick({
  try {
@@ -217,10 +218,14 @@ $timer.Add_Tick({
     if ($display.Holding) { $controls.State.Text=if ($Demo) { 'ДЕМО / ФИНИШ' } else { 'ФИНИШ / 5 С' } }
     for ($i=0;$i -lt 3;$i++) {
         $controls["S$i"].Text=if ($display.Sectors[$i] -gt 0 -or $display.ActiveSector -eq $i) { ($display.Sectors[$i]/1000.0).ToString('0.000',[Globalization.CultureInfo]::InvariantCulture) } else { '--.---' }
-        $controls["D$i"].Text=[AccOverlay.Timing]::Delta($display.Differences[$i]); $controls["S$i"].Foreground='#FFFFFF'; $controls["D$i"].Foreground=Color $display.Differences[$i]
+        $controls["D$i"].Text=$(if ($display.EstimatedDifferences[$i] -and $null -ne $display.Differences[$i]) { '≈' } else { '' })+[AccOverlay.Timing]::Delta($display.Differences[$i]); $controls["S$i"].Foreground='#FFFFFF'; $controls["D$i"].Foreground=Color $display.Differences[$i]
     }
     $controls.Lap.Text=if ($display.Lap -eq 0 -and $display.ActiveSector -ge 0) { '0:00.000' } else { [AccOverlay.Timing]::Time($display.Lap) }
-    $controls.LapDelta.Text=[AccOverlay.Timing]::Delta($display.LapDelta); $controls.LapDelta.Foreground=Color $display.LapDelta
+    $controls.LapDelta.Text=if ($null -eq $display.LapDelta -and -not $display.Holding) { if ($timing.HasReference) { 'НЕТ ТОЧКИ' } else { 'НЕТ ЗАПИСИ' } } else { $(if ($display.LapDeltaEstimated -and $null -ne $display.LapDelta) { '≈' } else { '' })+[AccOverlay.Timing]::Delta($display.LapDelta) }
+    $controls.LapDelta.FontSize=if ($null -eq $display.LapDelta -and -not $display.Holding) { 12 } else { 22 }
+    $controls.LapDelta.Foreground=Color $display.LapDelta
+    $controls.Forecast.Text=if ($display.Forecast -gt 0) { 'ПРОГН. '+[AccOverlay.Timing]::Time($display.Forecast) } else { 'ПРОГН. —' }
+    $controls.Forecast.ToolTip='Прогноз по записанному прошлому кругу и текущей разнице. Пока нет сравнения, используется время прошлого круга как ориентир.'
     $bestLabel=if ($timing.BestIsObserved) { 'BEST*  ' } else { 'BEST  ' }
     $sessionBest=if ($Demo) { 89000 } elseif ($broadcast.Fresh) { $broadcast.Best } else { 0 }
     $sessionText=if ($sessionBest -gt 0) { [AccOverlay.Timing]::Time($sessionBest) } elseif ($script:broadcastRestartRequired -and -not $broadcast.Fresh) { 'ПЕРЕЗАПУСТИ ACC' } elseif (-not $Demo -and -not $broadcast.Fresh) { 'НЕТ СВЯЗИ' } else { '--:--.---' }
@@ -230,8 +235,14 @@ $timer.Add_Tick({
     $controls.Best.ToolTip='Слева — мой лучший круг; справа — лучший действительный круг среди всех участников текущей сессии. '+$sessionHint
     if ($timing.BestIsObserved) { $controls.Best.ToolTip+=' BEST* — замеченный круг, действительность которого ещё не подтверждена.' }
     $controls.LastLap.Text=[AccOverlay.Timing]::Time($timing.LastLap)
-    for ($i=0;$i -lt 3;$i++) { $controls["D$i"].ToolTip='Разница этого сектора с тем же сектором предыдущего круга. После финиша показывается 5 секунд, затем очищается для нового круга.' }
-    $controls.LapDelta.ToolTip=if ($display.Holding) { 'Разница последних двух завершённых кругов.' } else { 'Текущая разница с предыдущим кругом в той же точке трассы; прочерк означает отсутствие записи для сравнения.' }
+    for ($i=0;$i -lt 3;$i++) { $controls["D$i"].ToolTip='Новый завершённый сектор минус сохранённый сектор прошлого круга. ≈ — граница восстановлена по отсчётам игры. После финиша результат держится 5 секунд.' }
+    $controls.LapDelta.ToolTip=if ($display.Holding) { 'Разница последних двух завершённых кругов из собственной истории оверлея.' } else { $display.DeltaStatus+'. Записано кругов: '+$timing.RecordedLaps+'. Точек прошлого круга: '+$timing.ReferenceSamples }
+    if (-not $Demo -and ([DateTime]::UtcNow-$script:lastDiagnostic).TotalSeconds -ge 2) {
+        $script:lastDiagnostic=[DateTime]::UtcNow
+        try {
+            @{ UpdatedUtc=[DateTime]::UtcNow.ToString('o'); Laps=$timing.Laps; Current=$f.Current; Sector=$f.Sector; Position=$f.Position; RecordedLaps=$timing.RecordedLaps; ReferenceSamples=$timing.ReferenceSamples; PreviousSectors=$timing.Previous; DisplaySectors=$display.Sectors; LapDelta=$display.LapDelta; DeltaStatus=$display.DeltaStatus; Holding=$display.Holding } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'timing-status.json') -Encoding UTF8
+        } catch { }
+    }
  } catch { $controls.State.Text='ОШИБКА ДАННЫХ'; Write-Warning $_ }
 })
 $window.Add_Closed({ $timer.Stop(); $reader.Dispose(); $broadcast.Dispose(); try { @{Left=$window.Left;Top=$window.Top} | ConvertTo-Json | Set-Content $settings } catch {} })
