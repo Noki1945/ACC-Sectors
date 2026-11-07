@@ -1,5 +1,7 @@
-﻿param([switch]$Demo, [switch]$SelfTest, [switch]$Preview, [ValidateRange(0,10000)][int]$PreviewDelayMs=400)
+﻿param([switch]$Demo, [switch]$SelfTest, [switch]$Preview, [ValidateRange(0,10000)][int]$PreviewDelayMs=400, [string]$DataDirectory)
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($DataDirectory)) { $DataDirectory=$PSScriptRoot }
+[void][IO.Directory]::CreateDirectory($DataDirectory)
 Add-Type -Path @((Join-Path $PSScriptRoot 'Telemetry.cs'),(Join-Path $PSScriptRoot 'Broadcast.cs'))
 if ($SelfTest) {
     function Frame($laps,$sector,$split,$last=0) {
@@ -116,7 +118,7 @@ Add-Type -AssemblyName PresentationFramework
 '@
 $window=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
 $controls=@{}; @('State','GapAhead','GapBehind','S0','S1','S2','D0','D1','D2','Best','Laps','LastLap','Lap','LapDelta','Forecast','PanelBackground','LastLapRow','SettingsButton') | ForEach-Object { $controls[$_]=$window.FindName($_) }
-$script:preferencesPath=Join-Path $PSScriptRoot 'preferences.json'
+$script:preferencesPath=Join-Path $DataDirectory 'preferences.json'
 $script:preferences=@{ BackgroundOpacity=0.30; ShowLastLap=$true }
 if (Test-Path -LiteralPath $script:preferencesPath) {
     try {
@@ -198,7 +200,7 @@ if ($Demo) {
     $demoClock=[Diagnostics.Stopwatch]::StartNew()
 }
 $window.Left=40; $window.Top=160
-$settings=Join-Path $PSScriptRoot 'position.json'
+$settings=Join-Path $DataDirectory 'position.json'
 if (Test-Path $settings) { try { $p=Get-Content $settings -Raw | ConvertFrom-Json; $window.Left=[Math]::Max(0,[Math]::Min([double]$p.Left,[System.Windows.SystemParameters]::VirtualScreenWidth-$window.Width)); $window.Top=[Math]::Max(0,[Math]::Min([double]$p.Top,[System.Windows.SystemParameters]::VirtualScreenHeight-$window.Height)) } catch {} }
 $window.Add_MouseLeftButtonDown({ $window.DragMove() })
 $window.Add_KeyDown({ if ($_.Key -eq 'Escape') { $window.Close() } })
@@ -258,7 +260,7 @@ $timer.Add_Tick({
     if (-not $Demo -and ([DateTime]::UtcNow-$script:lastDiagnostic).TotalSeconds -ge 2) {
         $script:lastDiagnostic=[DateTime]::UtcNow
         try {
-            @{ UpdatedUtc=[DateTime]::UtcNow.ToString('o'); Laps=$timing.Laps; Current=$f.Current; Sector=$f.Sector; Position=$f.Position; RecordedLaps=$timing.RecordedLaps; ReferenceSamples=$timing.ReferenceSamples; PreviousSectors=$timing.Previous; DisplaySectors=$display.Sectors; LapDelta=$display.LapDelta; DeltaStatus=$display.DeltaStatus; Holding=$display.Holding } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'timing-status.json') -Encoding UTF8
+            @{ UpdatedUtc=[DateTime]::UtcNow.ToString('o'); Laps=$timing.Laps; Current=$f.Current; Sector=$f.Sector; Position=$f.Position; RecordedLaps=$timing.RecordedLaps; ReferenceSamples=$timing.ReferenceSamples; PreviousSectors=$timing.Previous; DisplaySectors=$display.Sectors; LapDelta=$display.LapDelta; DeltaStatus=$display.DeltaStatus; Holding=$display.Holding } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $DataDirectory 'timing-status.json') -Encoding UTF8
         } catch { }
     }
  } catch { $controls.State.Text='ОШИБКА ДАННЫХ'; Write-Warning $_ }
@@ -274,7 +276,7 @@ if ($Preview) {
             $bmp.Render($window)
             $encoder=New-Object Windows.Media.Imaging.PngBitmapEncoder
             $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bmp))
-            $stream=[IO.File]::Create((Join-Path $PSScriptRoot 'preview.png')); $encoder.Save($stream); $stream.Dispose()
+            $stream=[IO.File]::Create((Join-Path $DataDirectory 'preview.png')); $encoder.Save($stream); $stream.Dispose()
             $this.Stop(); $window.Close()
         })
         $capture.Start()
