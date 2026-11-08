@@ -362,5 +362,25 @@ if ($null -ne $t.GetDisplay(95000).Graph) { throw 'Incomplete current lap must s
 Feed-GraphLap $t 1 90000 95000 95000 0
 $d=$t.GetDisplay(185000)
 if (-not $d.GraphVisible -or $d.Graph.Segments.Length -lt 70 -or $d.Graph.FinalDelta -ne -5000) { throw 'Full lap after partially recorded out lap lost the graph' }
+# Traffic indicators are always seconds; track length must never cause metres.
+if ([AccOverlay.TrafficPair]::Format($null,$true) -ne '—' -or [AccOverlay.TrafficPair]::Format(1.234,$true) -ne '≈1.234 с' -or [AccOverlay.TrafficPair]::Format(1.234,$false) -ne '1.234 с' -or [AccOverlay.TrafficPair]::Format(0,$false) -ne '0.000 с') { throw 'Seconds-only traffic formatting failed' }
+foreach($invalid in @([double]::NaN,[double]::PositiveInfinity,-1.0)) { if ([AccOverlay.TrafficPair]::Format($invalid,$false) -ne '—') { throw 'Invalid traffic interval must be unavailable' } }
+$trafficClient=New-Object AccOverlay.Broadcast(0,'')
+try {
+    $trafficClient.Process((New-BroadcastPacket 100000 1 $true 10))
+    $stream=New-Object IO.MemoryStream; $writer=New-Object IO.BinaryWriter($stream)
+    $writer.Write([byte]5);$writer.Write([int]0);$writer.Write([uint16]0);$writer.Write([int]0);$writer.Write([int]5793)
+    $trackPacket=$stream.ToArray();$writer.Dispose();$stream.Dispose();$trafficClient.Process($trackPacket)
+    $trafficClient.Process((New-TrafficPacket 42 0.50 10 5 1 0 0))
+    $trafficClient.Process((New-TrafficPacket 101 0.52 10 4 1 0 0))
+    $trafficClient.Process((New-TrafficPacket 202 0.48 10 6 1 0 0))
+    foreach($mode in @([AccOverlay.TrafficMode]::Track,[AccOverlay.TrafficMode]::Position)) {
+        $pair=$trafficClient.GetTraffic(42,0,$mode)
+        if ($pair.AheadId -ne 101 -or $pair.BehindId -ne 202 -or $trafficClient.TrackMeters -ne 5793) { throw 'Seconds-only test fixture did not select neighbors' }
+        if ([AccOverlay.TrafficPair]::Format($pair.AheadSeconds,$pair.AheadEstimated) -ne '—' -or [AccOverlay.TrafficPair]::Format($pair.BehindSeconds,$pair.BehindEstimated) -ne '—') { throw 'Track length produced an interval without lap time' }
+        $pair=$trafficClient.GetTraffic(42,100000,$mode)
+        if ([AccOverlay.TrafficPair]::Format($pair.AheadSeconds,$pair.AheadEstimated) -ne '≈2.000 с' -or [AccOverlay.TrafficPair]::Format($pair.BehindSeconds,$pair.BehindEstimated) -ne '≈2.000 с') { throw 'Traffic did not switch from unavailable to seconds' }
+    }
+} finally { $trafficClient.Dispose() }
 # Source-only interactive tester checks are excluded from the bundled EXE.
 if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'TestDriveTests.ps1')) { . (Join-Path $PSScriptRoot 'TestDriveTests.ps1') }

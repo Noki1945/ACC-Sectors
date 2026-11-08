@@ -1,6 +1,6 @@
 ﻿param([string]$OutputDirectory=(Join-Path $PSScriptRoot 'dist'))
 $ErrorActionPreference='Stop'
-$version='0.2.1'
+$version='0.2.2'
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw 'The .NET Framework C# compiler was not found.' }
 $destination=[IO.Path]::GetFullPath($OutputDirectory)

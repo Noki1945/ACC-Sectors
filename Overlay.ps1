@@ -280,15 +280,15 @@ $timer.Add_Tick({
     Update-DeltaGraphView $display
     if (-not $Demo) { $broadcast.Poll() }
     if ($Demo) {
-        if ($script:preferences.TrafficMode -eq 'Position') { $controls.GapAhead.Text='↑ 0.950'; $controls.GapBehind.Text='↓ 1.600' }
-        else { $controls.GapAhead.Text='↑ ≈1.234'; $controls.GapBehind.Text='↓ ≈0.875' }
+        if ($script:preferences.TrafficMode -eq 'Position') { $controls.GapAhead.Text='↑ 0.950 с'; $controls.GapBehind.Text='↓ 1.600 с' }
+        else { $controls.GapAhead.Text='↑ ≈1.234 с'; $controls.GapBehind.Text='↓ ≈0.875 с' }
     }
     elseif ($f.Status -eq 2 -or $f.Status -eq 3) {
         $traffic=$broadcast.GetTraffic($f.PlayerCarId,$timing.LastLap,[AccOverlay.TrafficMode]$script:preferences.TrafficMode)
-        $controls.GapAhead.Text='↑ '+[AccOverlay.TrafficPair]::Format($traffic.AheadSeconds,$traffic.AheadMeters,$traffic.AheadEstimated)
-        $controls.GapBehind.Text='↓ '+[AccOverlay.TrafficPair]::Format($traffic.BehindSeconds,$traffic.BehindMeters,$traffic.BehindEstimated)
-        $controls.GapAhead.ToolTip=$(if ($script:preferences.TrafficMode -eq 'Position') { 'Участник на одну позицию выше в классификации. ' } else { 'Ближайшая впереди на трассе, включая круговых. ' })+'≈ — оценка интервала. '+$broadcast.Status
-        $controls.GapBehind.ToolTip=$(if ($script:preferences.TrafficMode -eq 'Position') { 'Участник на одну позицию ниже в классификации. ' } else { 'Ближайшая сзади на трассе, включая круговых. ' })+'≈ — оценка интервала. '+$broadcast.Status
+        $controls.GapAhead.Text='↑ '+[AccOverlay.TrafficPair]::Format($traffic.AheadSeconds,$traffic.AheadEstimated)
+        $controls.GapBehind.Text='↓ '+[AccOverlay.TrafficPair]::Format($traffic.BehindSeconds,$traffic.BehindEstimated)
+        $controls.GapAhead.ToolTip=$(if ($script:preferences.TrafficMode -eq 'Position') { 'Участник на одну позицию выше в классификации. ' } else { 'Ближайшая впереди на трассе, включая круговых. ' })+'Отрыв в секундах. ≈ — оценка интервала. '+$broadcast.Status
+        $controls.GapBehind.ToolTip=$(if ($script:preferences.TrafficMode -eq 'Position') { 'Участник на одну позицию ниже в классификации. ' } else { 'Ближайшая сзади на трассе, включая круговых. ' })+'Отрыв в секундах. ≈ — оценка интервала. '+$broadcast.Status
     }
     else { $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —' }
     Update-ComparisonLabel

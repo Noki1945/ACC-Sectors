@@ -106,8 +106,8 @@ namespace AccOverlay {
     else if(distance<0 && -distance<rear) { rear=-distance; pair.BehindId=car.Id; }
    }
    int lap=referenceLap>0 && referenceLap<int.MaxValue?referenceLap:player.LapTime;
-   if(pair.AheadId.HasValue) { if(lap>0) pair.AheadSeconds=front*lap/1000.0; if(TrackMeters>0) pair.AheadMeters=front*TrackMeters; }
-   if(pair.BehindId.HasValue) { if(lap>0) pair.BehindSeconds=rear*lap/1000.0; if(TrackMeters>0) pair.BehindMeters=rear*TrackMeters; }
+   if(pair.AheadId.HasValue && lap>0) pair.AheadSeconds=front*lap/1000.0;
+   if(pair.BehindId.HasValue && lap>0) pair.BehindSeconds=rear*lap/1000.0;
    return pair;
   }
   TrafficPair GetClassification(TrackCar player,int referenceLap,DateTime now) {
@@ -141,9 +141,11 @@ namespace AccOverlay {
  sealed class TrackCar { public int Id,Location,LapTime,BestLap,Rank,Laps; public float Spline; public DateTime Updated; }
  public sealed class TrafficPair {
   public int? AheadId,BehindId;
-  public double? AheadSeconds,BehindSeconds,AheadMeters,BehindMeters;
+  public double? AheadSeconds,BehindSeconds;
   public bool AheadEstimated=true,BehindEstimated=true;
-  public static string Format(double? seconds,double? metres) { return seconds.HasValue?"≈"+seconds.Value.ToString("0.000",System.Globalization.CultureInfo.InvariantCulture):(metres.HasValue?metres.Value.ToString("0",System.Globalization.CultureInfo.InvariantCulture)+" м":"—"); }
-  public static string Format(double? seconds,double? metres,bool estimated) { return seconds.HasValue?(estimated?"≈":"")+seconds.Value.ToString("0.000",System.Globalization.CultureInfo.InvariantCulture):Format(seconds,metres); }
+  public static string Format(double? seconds,bool estimated) {
+   if(!seconds.HasValue || double.IsNaN(seconds.Value) || double.IsInfinity(seconds.Value) || seconds.Value<0) return "—";
+   return (estimated?"≈":"")+seconds.Value.ToString("0.000",System.Globalization.CultureInfo.InvariantCulture)+" с";
+  }
  }
 }

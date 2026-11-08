@@ -9,11 +9,11 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("ACC Sectors")]
 [assembly: AssemblyDescription("Compact timing and track-relative overlay for Assetto Corsa Competizione")]
 [assembly: AssemblyProduct("ACC Sectors")]
-[assembly: AssemblyVersion("0.2.1.0")]
-[assembly: AssemblyFileVersion("0.2.1.0")]
+[assembly: AssemblyVersion("0.2.2.0")]
+[assembly: AssemblyFileVersion("0.2.2.0")]
 
 internal static class Launcher {
-    const string Version = "0.2.1";
+    const string Version = "0.2.2";
     static readonly string[] Payload = { "Overlay.ps1", "Telemetry.cs", "Broadcast.cs", "BroadcastConfig.ps1", "RegressionTests.ps1", "Preferences.ps1", "DeltaGraph.cs", "DeltaGraph.ps1" };
 
     [STAThread]

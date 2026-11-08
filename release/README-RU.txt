@@ -1,4 +1,4 @@
-﻿ACC Sectors 0.2.1 — Windows x64
+﻿ACC Sectors 0.2.2 — Windows x64
 
 ЗАПУСК
 1. Запустите ACC-Sectors.exe двойным щелчком. Установка не нужна.
