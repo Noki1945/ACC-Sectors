@@ -1,4 +1,4 @@
-# Decode and format the two independent ACC gaps without swapping directions.
+﻿# Decode and format the two independent ACC gaps without swapping directions.
 $gapPage=New-Object byte[] 1588
 [BitConverter]::GetBytes([int]2).CopyTo($gapPage,4)
 [BitConverter]::GetBytes([int]1234).CopyTo($gapPage,1580)
@@ -91,11 +91,11 @@ $f=Frame 0 2 30000; $f.Current=61020; $t.Update($f)
 $f=Frame 0 2 61000; $f.Current=61040; $t.Update($f)
 if ($t.Sectors[1] -ne 31000) { throw 'Late split retry failed' }
 
-function New-BroadcastPacket([int]$time,[int]$session=1,[bool]$valid=$true) {
+function New-BroadcastPacket([int]$time,[int]$session=1,[bool]$valid=$true,[int]$sessionType=4) {
     $stream=New-Object IO.MemoryStream
     $writer=New-Object IO.BinaryWriter($stream)
     $writer.Write([byte]2); $writer.Write([uint16]0); $writer.Write([uint16]$session)
-    $writer.Write([byte]4); $writer.Write([byte]5)
+    $writer.Write([byte]$sessionType); $writer.Write([byte]5)
     $writer.Write([single]1000); $writer.Write([single]100000); $writer.Write([int]0)
     # Three UTF-8 strings, with uint16 byte lengths.
     1..3 | ForEach-Object { $writer.Write([uint16]0) }
@@ -131,15 +131,15 @@ try {
 } finally { $broadcast.Dispose(); $server.Close() }
 
 # Track neighbors must be chosen independently of race rank and lap count.
-function New-TrafficPacket([int]$id,[single]$spline,[int]$laps,[int]$rank,[int]$location=1) {
+function New-TrafficPacket([int]$id,[single]$spline,[int]$laps,[int]$rank,[int]$location=1,[int]$best=100000,[int]$last=100000,[bool]$validBest=$true) {
     $stream=New-Object IO.MemoryStream; $w=New-Object IO.BinaryWriter($stream)
     $w.Write([byte]3); $w.Write([uint16]$id); $w.Write([uint16]0); $w.Write([byte]1); $w.Write([byte]2)
     1..3 | ForEach-Object { $w.Write([single]0) }
     $w.Write([byte]$location); $w.Write([uint16]0); $w.Write([uint16]$rank); $w.Write([uint16]$rank); $w.Write([uint16]1)
     $w.Write($spline); $w.Write([uint16]$laps); $w.Write([int]0)
-    1..3 | ForEach-Object {
-        $w.Write([int]100000); $w.Write([uint16]$id); $w.Write([uint16]0); $w.Write([byte]0)
-        $w.Write([byte]0); $w.Write([byte]1); $w.Write([byte]0); $w.Write([byte]0)
+    foreach ($kind in @(0,1,2)) {
+        $w.Write([int]$(if ($kind -eq 0) { $best } else { $last })); $w.Write([uint16]$id); $w.Write([uint16]0); $w.Write([byte]0)
+        $w.Write([byte]$(if ($kind -eq 0 -and -not $validBest) { 1 } else { 0 })); $w.Write([byte]$(if ($kind -eq 0) { $validBest } else { $true })); $w.Write([byte]0); $w.Write([byte]0)
     }
     $packet=$stream.ToArray(); $w.Dispose(); $stream.Dispose(); return ,$packet
 }
@@ -163,3 +163,185 @@ try {
     $trafficClient.Process((New-BroadcastPacket 100000 3))
     if ($null -ne $trafficClient.GetTraffic(42,100000).AheadId) { throw 'Old traffic leaked into the next session' }
 } finally { $trafficClient.Dispose() }
+
+# Classification neighbors are exact adjacent ranks, including cars in pits.
+$client=New-Object AccOverlay.Broadcast(0,'')
+try {
+    $client.Process((New-BroadcastPacket 100000 1 $true 10))
+    $client.Process((New-TrafficPacket 42 0.5 10 5))
+    $client.Process((New-TrafficPacket 101 0.2 11 4))
+    $client.Process((New-TrafficPacket 202 0.9 9 6))
+    $client.Process((New-TrafficPacket 9 0.501 9 8))
+    $pair=$client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position)
+    if ($pair.AheadId -ne 101 -or $pair.BehindId -ne 202 -or -not $pair.AheadEstimated -or [Math]::Abs($pair.AheadSeconds-70) -gt 0.001) { throw 'Classification rank / unwrapped race progress failed' }
+    if ($client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Track).AheadId -ne 9) { throw 'Track mode was changed by classification mode' }
+    $client.Process((New-TrafficPacket 101 0.2 11 4 2))
+    $pair=$client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position)
+    if ($pair.AheadId -ne 101 -or $null -ne $pair.AheadSeconds) { throw 'Pitted classification neighbor must remain selected without a fabricated race interval' }
+    $client.Process((New-TrafficPacket 42 0.5 10 4))
+    $client.Process((New-TrafficPacket 101 0.2 10 5))
+    $client.Process((New-TrafficPacket 303 0.4 11 3))
+    $pair=$client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position)
+    if ($pair.AheadId -ne 303 -or $pair.BehindId -ne 101) { throw 'Position changes did not select new classification neighbors' }
+    $client.Process((New-TrafficPacket 304 0.3 11 3))
+    if ($null -ne $client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position).AheadId) { throw 'Asynchronous duplicate ranks must not guess a neighbor' }
+    if ($null -ne $client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position,[DateTime]::UtcNow.AddSeconds(3)).BehindId) { throw 'Stale classification data was not hidden' }
+    $client.Process((New-BroadcastPacket 100000 2 $true 4))
+    $client.Process((New-TrafficPacket 42 0.5 0 2 1 100000))
+    $client.Process((New-TrafficPacket 101 0.2 0 1 2 99000))
+    $client.Process((New-TrafficPacket 202 0.9 0 3 1 102000))
+    $pair=$client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position)
+    if ($pair.AheadSeconds -ne 1 -or $pair.BehindSeconds -ne 2 -or $pair.AheadEstimated -or $pair.BehindEstimated) { throw 'Qualifying intervals must use valid personal-best lap differences' }
+    $client.Process((New-TrafficPacket 101 0.2 0 1 1 98000 100000 $false))
+    if ($null -ne $client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position).AheadSeconds) { throw 'Invalid qualifying best was used as an interval' }
+    $client.Process((New-BroadcastPacket 100000 3 $true 10))
+    $client.Process((New-TrafficPacket 42 0.5 10 1))
+    $client.Process((New-TrafficPacket 202 0.4 10 2))
+    if ($null -ne $client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position).AheadId) { throw 'Leader must not have a classified car ahead' }
+    $client.Process((New-TrafficPacket 42 0.5 10 3))
+    if ($null -ne $client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position).BehindId) { throw 'Missing trailing rank must not choose an unrelated car' }
+    $client.Process((New-BroadcastPacket 100000 3 $true 4))
+    if ($null -ne $client.GetTraffic(42,100000,[AccOverlay.TrafficMode]::Position).AheadId) { throw 'Session type change retained old classification data' }
+} finally { $client.Dispose() }
+
+# Reference modes: record full positional traces and freeze reference per lap.
+function Feed-TestLap($timing,[int]$number,[int]$duration,[int]$last,[int]$best,[bool]$valid=$true,[int]$session=0,[int]$sessionIndex=0) {
+    for ($i=0;$i -lt 100;$i++) {
+        $f=Sample $number ([int][Math]::Floor($i/34.0)) ([int]($duration*$i/100.0)) $last ($i/100.0)
+        $f.Best=$best; $f.Valid=$valid; $f.Session=$session; $f.SessionIndex=$sessionIndex
+        $timing.Update($f)
+    }
+    $f=Sample ($number+1) 0 0 $duration 0
+    $f.Best=$best; $f.Valid=$true; $f.Session=$session; $f.SessionIndex=$sessionIndex
+    $timing.Update($f)
+}
+$t=New-Object AccOverlay.Timing
+Feed-TestLap $t 0 90000 0 0
+Feed-TestLap $t 1 95000 90000 90000
+$t.Mode=[AccOverlay.ComparisonMode]::PersonalBest
+$f=Sample 2 1 40000 95000 0.5; $f.Best=90000; $t.Update($f)
+if ($t.LiveDifference -ne -5000 -or $t.GetDisplay(999999999999).Forecast -ne 85000) { throw 'Personal-best positional delta / forecast failed' }
+$t.Mode=[AccOverlay.ComparisonMode]::Previous
+if ($t.LiveDifference -ne -7500) { throw 'Manual reference change did not apply immediately' }
+$t.Mode=[AccOverlay.ComparisonMode]::PersonalBest
+Feed-TestLap $t 2 85000 95000 90000
+if ($t.GetDisplay().LapDelta -ne -5000) { throw 'New personal record was compared against itself' }
+$f=Sample 3 1 40000 85000 0.5; $f.Best=85000; $t.Update($f)
+if ($t.LiveDifference -ne -2500) { throw 'New personal-best reference was not selected for the next lap' }
+Feed-TestLap $t 3 80000 85000 85000 $false
+$f=Sample 4 1 40000 80000 0.5; $f.Best=85000; $t.Update($f)
+if ($t.LiveDifference -ne -2500) { throw 'Invalid lap replaced the personal reference' }
+$t=New-Object AccOverlay.Timing; $t.Mode=[AccOverlay.ComparisonMode]::PersonalBest
+$f=Sample 5 0 0 95000 0; $f.Best=80000; $t.Update($f)
+Feed-TestLap $t 5 90000 95000 80000
+$f=Sample 6 1 40000 90000 0.5; $f.Best=80000; $t.Update($f)
+$d=$t.GetDisplay(999999999999)
+if ($null -ne $d.LapDelta -or $d.Forecast -ne 0 -or $t.HasReference) { throw 'Unknown pre-launch personal-best points were fabricated or replaced by previous lap' }
+foreach ($session in @(0,1,2,3,7,4,-1,99)) {
+    $expected=if ($session -in @(1,3,7)) { 'PersonalBest' } else { 'Previous' }
+    if ([AccOverlay.Timing]::ResolveMode([AccOverlay.ComparisonMode]::Automatic,$session).ToString() -ne $expected) { throw 'Automatic session mapping failed' }
+    if ([AccOverlay.Timing]::ResolveMode([AccOverlay.ComparisonMode]::Previous,$session) -ne [AccOverlay.ComparisonMode]::Previous) { throw 'Automatic mode overrode a manual choice' }
+}
+$t=New-Object AccOverlay.Timing
+foreach ($session in @(0,1,2)) {
+    $f=Sample 0 0 0 0 0; $f.Session=$session; $t.Update($f)
+    $expected=if ($session -eq 1) { 'PersonalBest' } else { 'Previous' }
+    if ($t.EffectiveMode.ToString() -ne $expected -or $t.RecordedLaps -ne 0) { throw 'Live session transition retained incompatible reference data' }
+}
+# Clock and last-lap time can arrive half a second apart at the finish.
+$t=New-Object AccOverlay.Timing
+$t.Update((Sample 0 0 0 95000 0),0)
+$t.Update((Sample 0 2 89980 95000 0.999),89980)
+$t.Update((Sample 1 0 20 95000 0.0002),90020)
+$t.Update((Sample 1 0 350 95000 0.004),90350)
+if ($t.RecordedLaps -ne 0) { throw 'Stale last-lap time was committed before the delayed result arrived' }
+$t.Update((Sample 1 0 550 90000 0.006),90550)
+if ($t.RecordedLaps -ne 1 -or $t.History[0].Total -ne 90000 -or $t.History[0].EstimatedTotal) { throw 'Delayed official lap result failed to refine the pending finish' }
+# Best-lap references must disappear on session changes and on replay entry.
+$t=New-Object AccOverlay.Timing; $t.Mode=[AccOverlay.ComparisonMode]::PersonalBest
+Feed-TestLap $t 0 90000 0 0
+if (-not $t.HasReference) { throw 'Recorded valid best trace missing' }
+$f=Sample 1 0 100 90000 0.001; $f.SessionIndex=4; $t.Update($f)
+if ($t.HasReference -or $t.RecordedLaps -ne 0) { throw 'Best trace leaked across sessions' }
+$f.Status=1; $t.Update($f)
+if ($t.HasReference -or $t.RecordedLaps -ne 0) { throw 'Replay retained live reference data' }
+
+# The same loader/writer is used by the UI and by these compatibility tests.
+$preferenceFile=Join-Path $env:TEMP ('acc-preferences-'+[Guid]::NewGuid().ToString('N')+'.json')
+try {
+    [IO.File]::WriteAllText($preferenceFile,'{"BackgroundOpacity":0.65,"ShowLastLap":false}')
+    $prefs=Read-OverlayPreferences $preferenceFile
+    if ($prefs.TrafficMode -ne 'Track' -or $prefs.ComparisonMode -ne 'Automatic' -or $prefs.BackgroundOpacity -ne 0.65 -or $prefs.ShowLastLap) { throw 'Old preference compatibility failed' }
+    $prefs.TrafficMode='Position'; $prefs.ComparisonMode='PersonalBest'
+    Write-OverlayPreferences $prefs $preferenceFile
+    $loaded=Read-OverlayPreferences $preferenceFile
+    if ($loaded.TrafficMode -ne 'Position' -or $loaded.ComparisonMode -ne 'PersonalBest' -or $loaded.BackgroundOpacity -ne 0.65) { throw 'New preferences did not persist' }
+    [IO.File]::WriteAllText($preferenceFile,'{"TrafficMode":"unknown","ComparisonMode":"unknown"}')
+    $loaded=Read-OverlayPreferences $preferenceFile
+    if ($loaded.TrafficMode -ne 'Track' -or $loaded.ComparisonMode -ne 'Automatic') { throw 'Unknown preference values must use defaults' }
+} finally { if (Test-Path -LiteralPath $preferenceFile) { Remove-Item -LiteralPath $preferenceFile } }
+
+# Delta graph: same finish hold clock, immutable snapshot and start-of-lap reference.
+function Feed-GraphLap($model,[int]$number,[int]$duration,[long]$start,[int]$last,[int]$best) {
+    for ($i=0;$i -lt 100;$i++) {
+        $f=Sample $number ([int][Math]::Floor($i/34.0)) ([int]($duration*$i/100.0)) $last ($i/100.0)
+        $f.Best=$best; $f.Valid=$true
+        $model.Update($f,($start+$f.Current))
+    }
+    $f=Sample ($number+1) 0 0 $duration 0; $f.Best=$best; $f.Valid=$true
+    $model.Update($f,($start+$duration))
+}
+$t=New-Object AccOverlay.Timing
+if ($t.ShowDeltaGraph) { throw 'Graph must default to disabled' }
+$t.Mode=[AccOverlay.ComparisonMode]::PersonalBest
+Feed-GraphLap $t 0 90000 0 0 0
+Feed-GraphLap $t 1 85000 90000 90000 90000
+$d=$t.GetDisplay(175000)
+if ($d.GraphVisible -or $null -eq $d.Graph -or $d.Graph.FinalDelta -ne -5000 -or $d.Graph.Segments.Length -lt 90) { throw 'Completed graph or frozen previous personal best failed' }
+$t.ShowDeltaGraph=$true
+$d=$t.GetDisplay(175000); $snapshot=$d.Graph
+if (-not $d.GraphVisible -or $d.Graph.ReferenceMode -ne [AccOverlay.ComparisonMode]::PersonalBest) { throw 'Live graph enabling failed' }
+if (-not $t.GetDisplay(179999).GraphVisible -or $t.GetDisplay(180000).GraphVisible -or $t.GetDisplay(180000).Holding) { throw 'Graph and finish hold must expire together at exactly 5000ms' }
+$t.Mode=[AccOverlay.ComparisonMode]::Previous
+if (-not [object]::ReferenceEquals($snapshot,$t.GetDisplay(176000).Graph)) { throw 'Graph changed during finish display' }
+$t.ShowDeltaGraph=$false
+if ($t.GetDisplay(176000).GraphVisible) { throw 'Live graph disabling failed' }
+$t.ShowDeltaGraph=$true
+$f=Sample 2 0 10 85000 0.0001; $f.SessionIndex=9; $t.Update($f,176000)
+if ($t.GetDisplay(176000).GraphVisible -or $null -ne $t.GetDisplay(176000).Graph) { throw 'Session reset retained graph' }
+foreach ($status in @(0,1)) {
+    $t=New-Object AccOverlay.Timing; $t.ShowDeltaGraph=$true
+    Feed-GraphLap $t 0 90000 0 0 0
+    $f=Sample 1 0 5 90000 0.0001; $f.Status=$status; $t.Update($f,90005)
+    if ($t.GetDisplay(90005).GraphVisible) { throw 'Menu/replay retained graph' }
+}
+$t=New-Object AccOverlay.Timing; $t.ShowDeltaGraph=$true
+$f=Sample 0 1 45000 0 0.5; $t.Update($f,45000)
+$f=Sample 1 0 0 90000 0; $t.Update($f,90000)
+if ($null -ne $t.GetDisplay(90000).Graph) { throw 'Incomplete lap produced a graph' }
+$none=[AccOverlay.DeltaGraphData]::Build($true,$null,$null,90000,$null,$null,85000,[AccOverlay.ComparisonMode]::PersonalBest,$false)
+if ($none.Segments.Length -ne 0 -or $none.FinalDelta -ne 5000) { throw 'Missing trace must produce no data, never fabricated points' }
+$p=[float[]]@(0..100 | ForEach-Object { $_/100.0 })
+$times=[int[]]@(0..100 | ForEach-Object { $_*900 })
+$reference=[int[]]@(0..100 | ForEach-Object { $_*950 })
+$g=[AccOverlay.DeltaGraphData]::Build($true,$p,$times,90000,$p,$reference,95000,[AccOverlay.ComparisonMode]::Previous,$false)
+if ($g.Segments[-1].Y2 -ne -5) { throw 'Graph must match samples by track progress' }
+$plot=[AccOverlay.DeltaGraphPlot]::Create($g,214,50)
+if ([string]::IsNullOrWhiteSpace($plot.Green) -or -not [string]::IsNullOrWhiteSpace($plot.Red)) { throw 'Faster graph must be green' }
+$gapPositions=[float[]]@($p[0..20]+$p[40..100]); $gapTimes=[int[]]@($times[0..20]+$times[40..100])
+$g=[AccOverlay.DeltaGraphData]::Build($true,$p,$times,90000,$gapPositions,$gapTimes,90000,[AccOverlay.ComparisonMode]::Previous,$false)
+foreach($segment in $g.Segments) { if ($segment.X1 -lt 0.39 -and $segment.X2 -gt 0.21) { throw 'Graph interpolated across missing packets' } }
+$r=[AccOverlay.DeltaGraphLayout]::Place(100,100,516,244,0,0,1920,1080)
+$l=[AccOverlay.DeltaGraphLayout]::Place(1300,100,516,244,0,0,1920,1080)
+if (-not $r.Visible -or $r.OnLeft -or $r.Left -ne 622 -or [Math]::Abs($r.Height-97.6) -gt 0.001 -or [Math]::Abs($r.Top-173.2) -gt 0.001 -or -not $l.OnLeft -or $l.Left -ne 1064) { throw 'Graph positioning/size failed' }
+if ([AccOverlay.DeltaGraphLayout]::Place(0,0,516,244,0,0,600,800).Visible) { throw 'Graph must hide when no side fits' }
+if (-not [AccOverlay.DeltaGraphLayout]::Place(-1800,100,516,244,-1920,0,1920,1080).Visible) { throw 'Negative monitor coordinates failed' }
+$preferenceFile=Join-Path $env:TEMP ('acc-graph-prefs-'+[Guid]::NewGuid().ToString('N')+'.json')
+try {
+    $prefs=Read-OverlayPreferences $preferenceFile
+    if ($prefs.ShowDeltaGraph) { throw 'Graph preference default failed' }
+    [IO.File]::WriteAllText($preferenceFile,'{"ShowLastLap":true}')
+    if ((Read-OverlayPreferences $preferenceFile).ShowDeltaGraph) { throw 'Old preferences enabled graph' }
+    $prefs.ShowDeltaGraph=$true; Write-OverlayPreferences $prefs $preferenceFile
+    if (-not (Read-OverlayPreferences $preferenceFile).ShowDeltaGraph) { throw 'Graph preference did not persist' }
+} finally { if (Test-Path -LiteralPath $preferenceFile) { Remove-Item -LiteralPath $preferenceFile } }

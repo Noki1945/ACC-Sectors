@@ -2,7 +2,8 @@
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($DataDirectory)) { $DataDirectory=$PSScriptRoot }
 [void][IO.Directory]::CreateDirectory($DataDirectory)
-Add-Type -Path @((Join-Path $PSScriptRoot 'Telemetry.cs'),(Join-Path $PSScriptRoot 'Broadcast.cs'))
+Add-Type -Path @((Join-Path $PSScriptRoot 'Telemetry.cs'),(Join-Path $PSScriptRoot 'Broadcast.cs'),(Join-Path $PSScriptRoot 'DeltaGraph.cs'))
+. (Join-Path $PSScriptRoot 'Preferences.ps1')
 if ($SelfTest) {
     function Frame($laps,$sector,$split,$last=0) {
         $f = New-Object AccOverlay.Frame
@@ -118,20 +119,11 @@ Add-Type -AssemblyName PresentationFramework
 '@
 $window=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
 $controls=@{}; @('State','GapAhead','GapBehind','S0','S1','S2','D0','D1','D2','Best','Laps','LastLap','Lap','LapDelta','Forecast','PanelBackground','LastLapRow','SettingsButton') | ForEach-Object { $controls[$_]=$window.FindName($_) }
+. (Join-Path $PSScriptRoot 'DeltaGraph.ps1')
 $script:preferencesPath=Join-Path $DataDirectory 'preferences.json'
-$script:preferences=@{ BackgroundOpacity=0.30; ShowLastLap=$true }
-if (Test-Path -LiteralPath $script:preferencesPath) {
-    try {
-        $saved=Get-Content -LiteralPath $script:preferencesPath -Raw | ConvertFrom-Json
-        if ($null -ne $saved.BackgroundOpacity) {
-            $opacity=[double]$saved.BackgroundOpacity
-            if (-not [double]::IsNaN($opacity) -and -not [double]::IsInfinity($opacity)) { $script:preferences.BackgroundOpacity=[Math]::Max(0,[Math]::Min(1,$opacity)) }
-        }
-        if ($saved.ShowLastLap -is [bool]) { $script:preferences.ShowLastLap=$saved.ShowLastLap }
-    } catch { Write-Warning 'Не удалось прочитать настройки. Используются значения по умолчанию.' }
-}
+$script:preferences=Read-OverlayPreferences $script:preferencesPath
 function Save-Preferences {
-    try { $script:preferences | ConvertTo-Json | Set-Content -LiteralPath $script:preferencesPath -Encoding UTF8 }
+    try { Write-OverlayPreferences $script:preferences $script:preferencesPath }
     catch { Write-Warning 'Не удалось сохранить настройки панели.' }
 }
 function Apply-Preferences {
@@ -139,9 +131,23 @@ function Apply-Preferences {
     $controls.PanelBackground.Background=New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromArgb($alpha,20,24,32))
     $controls.LastLapRow.Visibility=if ($script:preferences.ShowLastLap) { 'Visible' } else { 'Collapsed' }
     $window.Height=244
+    if ($null -ne $timing) { $timing.Mode=[AccOverlay.ComparisonMode]$script:preferences.ComparisonMode; $timing.ShowDeltaGraph=$script:preferences.ShowDeltaGraph }
+    Update-ComparisonLabel
+    Set-DeltaGraphAppearance
+    if (-not $script:preferences.ShowDeltaGraph) { $script:graphWindow.Hide() }
+    elseif ($null -ne $script:lastDisplay) { Update-DeltaGraphView $script:lastDisplay }
 }
-Apply-Preferences
 $script:settingsWindow=$null
+function Get-ComparisonLabel($mode) {
+    if ($mode -eq [AccOverlay.ComparisonMode]::PersonalBest) { return 'Личный лучший круг' }
+    return 'Предыдущий круг'
+}
+function Update-ComparisonLabel {
+    if ($null -ne $script:settingsControls -and $null -ne $timing) {
+        $label=Get-ComparisonLabel $timing.EffectiveMode
+        $script:settingsControls.ActiveComparison.Text='Сейчас: '+$label
+    }
+}
 function Show-OverlaySettings {
     if ($null -ne $script:settingsWindow) { [void]$script:settingsWindow.Activate(); return }
     [xml]$settingsXaml=@'
@@ -153,6 +159,16 @@ function Show-OverlaySettings {
   <TextBlock Text="0% — прозрачный · 100% — непрозрачный" FontSize="12" Foreground="#D7DFEB" Margin="0,0,0,20"/>
   <CheckBox Name="ShowLastLapToggle" Content="Показывать прошлый круг" Foreground="White"/>
   <TextBlock Text="Время последнего завершённого круга под строкой BEST." TextWrapping="Wrap" FontSize="12" Foreground="#D7DFEB" Margin="23,7,0,15"/>
+  <TextBlock Text="Соседние машины" Margin="0,0,0,6"/>
+  <ComboBox Name="TrafficModeChoice" Foreground="Black" SelectedIndex="0" Margin="0,0,0,14">
+   <ComboBoxItem Tag="Track" Content="На трассе"/><ComboBoxItem Tag="Position" Content="По позиции"/>
+  </ComboBox>
+  <TextBlock Text="Сравнение времени круга" Margin="0,0,0,6"/>
+  <ComboBox Name="ComparisonChoice" Foreground="Black" SelectedIndex="0">
+   <ComboBoxItem Tag="Automatic" Content="Автоматически"/><ComboBoxItem Tag="Previous" Content="Предыдущий круг"/><ComboBoxItem Tag="PersonalBest" Content="Личный лучший круг"/>
+  </ComboBox>
+  <TextBlock Name="ActiveComparison" FontSize="12" Margin="0,6,0,15" Foreground="#D7DFEB"/>
+  <CheckBox Name="ShowDeltaGraphToggle" Content="Показывать график дельты после круга" Foreground="White" Margin="0,0,0,15"/>
   <TextBlock Text="Изменения применяются и сохраняются сразу." TextWrapping="Wrap" FontSize="12" Margin="0,0,0,16"/>
   <Button Name="DoneButton" Content="Готово" HorizontalAlignment="Right" Padding="20,6" MinWidth="90"/>
  </StackPanel>
@@ -161,10 +177,26 @@ function Show-OverlaySettings {
     $script:settingsWindow=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $settingsXaml))
     $script:settingsWindow.Owner=$window
     $script:settingsControls=@{}
-    @('OpacityValue','OpacitySlider','ShowLastLapToggle','DoneButton') | ForEach-Object { $script:settingsControls[$_]=$script:settingsWindow.FindName($_) }
+    @('OpacityValue','OpacitySlider','ShowLastLapToggle','DoneButton','TrafficModeChoice','ComparisonChoice','ActiveComparison','ShowDeltaGraphToggle') | ForEach-Object { $script:settingsControls[$_]=$script:settingsWindow.FindName($_) }
     $script:settingsControls.OpacitySlider.Value=$script:preferences.BackgroundOpacity*100
     $script:settingsControls.OpacityValue.Text=('{0:0}%' -f ($script:preferences.BackgroundOpacity*100))
-    $script:settingsControls.ShowLastLapToggle.IsChecked=$script:preferences.ShowLastLap
+        $script:settingsControls.ShowLastLapToggle.IsChecked=$script:preferences.ShowLastLap
+    $script:settingsControls.TrafficModeChoice.SelectedIndex=if ($script:preferences.TrafficMode -eq 'Position') { 1 } else { 0 }
+    $script:settingsControls.ComparisonChoice.SelectedIndex=@('Automatic','Previous','PersonalBest').IndexOf($script:preferences.ComparisonMode)
+    Update-ComparisonLabel
+    $script:settingsControls.TrafficModeChoice.Add_SelectionChanged({
+        $script:preferences.TrafficMode=[string]$script:settingsControls.TrafficModeChoice.SelectedItem.Tag
+        Apply-Preferences; Save-Preferences
+    })
+    $script:settingsControls.ComparisonChoice.Add_SelectionChanged({
+        $script:preferences.ComparisonMode=[string]$script:settingsControls.ComparisonChoice.SelectedItem.Tag
+        Apply-Preferences; Save-Preferences
+    })
+    $script:settingsControls.ShowDeltaGraphToggle.IsChecked=$script:preferences.ShowDeltaGraph
+    $script:settingsControls.ShowDeltaGraphToggle.Add_Click({
+        $script:preferences.ShowDeltaGraph=[bool]$script:settingsControls.ShowDeltaGraphToggle.IsChecked
+        Apply-Preferences; Save-Preferences
+    })
     $script:settingsControls.OpacitySlider.Add_ValueChanged({
         $script:preferences.BackgroundOpacity=[double]$_.NewValue/100
         $script:settingsControls.OpacityValue.Text=('{0:0}%' -f $_.NewValue)
@@ -181,6 +213,7 @@ function Show-OverlaySettings {
 }
 $controls.SettingsButton.Add_Click({ Show-OverlaySettings })
 $reader=New-Object AccOverlay.Reader; $timing=New-Object AccOverlay.Timing
+Apply-Preferences
 . (Join-Path $PSScriptRoot 'BroadcastConfig.ps1')
 $broadcast=if ($Demo -or $Preview) { New-Object AccOverlay.Broadcast(0,'') } else { Initialize-LocalBroadcast }
 function Get-DemoFrame([long]$clock) {
@@ -194,7 +227,7 @@ function Get-DemoFrame([long]$clock) {
     $f.Last=if ($f.Laps -ge 2) { 90000 } elseif ($f.Laps -eq 1) { 93000 } else { 0 }; $f.Best=$f.Last
     return $f
 }
-if ($Preview) { $Demo=$true }
+if ($Preview) { $Demo=$true; $script:preferences.ShowDeltaGraph=$true; Apply-Preferences }
 if ($Demo) {
     for ($demoSeed=0; $demoSeed -le 183000; $demoSeed+=500) { $timing.Update((Get-DemoFrame $demoSeed),[long]$demoSeed) }
     $demoClock=[Diagnostics.Stopwatch]::StartNew()
@@ -218,23 +251,29 @@ $timer.Add_Tick({
         $display=$timing.GetDisplay([long]$demoTime); $controls.State.Text='ДЕМО'
     } else {
         $f=$reader.Read()
-        if ($null -eq $f) { $controls.State.Text='ОЖИДАНИЕ ACC'; $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —'; return }
+        if ($null -eq $f) { $controls.State.Text='ОЖИДАНИЕ ACC'; $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —'; Update-DeltaGraphView ($timing.GetDisplay()); return }
         if ($script:lastPacket -ne $f.Packet) { $script:lastChange=[DateTime]::UtcNow; $script:lastPacket=$f.Packet }
-        if (([DateTime]::UtcNow-$script:lastChange).TotalSeconds -gt 5) { $controls.State.Text='НЕТ ТЕЛЕМЕТРИИ'; $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —'; $reader.Dispose(); return }
+        if (([DateTime]::UtcNow-$script:lastChange).TotalSeconds -gt 5) { $controls.State.Text='НЕТ ТЕЛЕМЕТРИИ'; $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —'; $reader.Dispose(); Update-DeltaGraphView ($timing.GetDisplay()); return }
         $timing.Update($f)
         $display=$timing.GetDisplay()
         $controls.State.Text= switch ($f.Status) { 0 {'ОЖИДАНИЕ ACC'} 1 {'ПОВТОР'} 2 {'LIVE'} 3 {'ПАУЗА'} default {'ОЖИДАНИЕ ACC'} }
     }
+    $script:lastDisplay=$display
+    Update-DeltaGraphView $display
     if (-not $Demo) { $broadcast.Poll() }
-    if ($Demo) { $controls.GapAhead.Text='↑ ≈1.234'; $controls.GapBehind.Text='↓ ≈0.875' }
+    if ($Demo) {
+        if ($script:preferences.TrafficMode -eq 'Position') { $controls.GapAhead.Text='↑ 0.950'; $controls.GapBehind.Text='↓ 1.600' }
+        else { $controls.GapAhead.Text='↑ ≈1.234'; $controls.GapBehind.Text='↓ ≈0.875' }
+    }
     elseif ($f.Status -eq 2 -or $f.Status -eq 3) {
-        $traffic=$broadcast.GetTraffic($f.PlayerCarId,$timing.LastLap)
-        $controls.GapAhead.Text='↑ '+[AccOverlay.TrafficPair]::Format($traffic.AheadSeconds,$traffic.AheadMeters)
-        $controls.GapBehind.Text='↓ '+[AccOverlay.TrafficPair]::Format($traffic.BehindSeconds,$traffic.BehindMeters)
-        $controls.GapAhead.ToolTip='Ближайшая впереди на трассе, включая круговых. ≈ — оценка времени по положению на трассе и времени круга. '+$broadcast.Status
-        $controls.GapBehind.ToolTip='Ближайшая сзади на трассе, включая круговых. ≈ — оценка времени по положению на трассе и времени круга. '+$broadcast.Status
+        $traffic=$broadcast.GetTraffic($f.PlayerCarId,$timing.LastLap,[AccOverlay.TrafficMode]$script:preferences.TrafficMode)
+        $controls.GapAhead.Text='↑ '+[AccOverlay.TrafficPair]::Format($traffic.AheadSeconds,$traffic.AheadMeters,$traffic.AheadEstimated)
+        $controls.GapBehind.Text='↓ '+[AccOverlay.TrafficPair]::Format($traffic.BehindSeconds,$traffic.BehindMeters,$traffic.BehindEstimated)
+        $controls.GapAhead.ToolTip=$(if ($script:preferences.TrafficMode -eq 'Position') { 'Участник на одну позицию выше в классификации. ' } else { 'Ближайшая впереди на трассе, включая круговых. ' })+'≈ — оценка интервала. '+$broadcast.Status
+        $controls.GapBehind.ToolTip=$(if ($script:preferences.TrafficMode -eq 'Position') { 'Участник на одну позицию ниже в классификации. ' } else { 'Ближайшая сзади на трассе, включая круговых. ' })+'≈ — оценка интервала. '+$broadcast.Status
     }
     else { $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —' }
+    Update-ComparisonLabel
     if ($display.Holding) { $controls.State.Text=if ($Demo) { 'ДЕМО / ФИНИШ' } else { 'ФИНИШ / 5 С' } }
     for ($i=0;$i -lt 3;$i++) {
         $controls["S$i"].Text=if ($display.Sectors[$i] -gt 0 -or $display.ActiveSector -eq $i) { ($display.Sectors[$i]/1000.0).ToString('0.000',[Globalization.CultureInfo]::InvariantCulture) } else { '--.---' }
@@ -245,7 +284,7 @@ $timer.Add_Tick({
     $controls.LapDelta.FontSize=if ($null -eq $display.LapDelta -and -not $display.Holding) { 12 } else { 22 }
     $controls.LapDelta.Foreground=Color $display.LapDelta
     $controls.Forecast.Text=if ($display.Forecast -gt 0) { 'ПРОГН. '+[AccOverlay.Timing]::Time($display.Forecast) } else { 'ПРОГН. —' }
-    $controls.Forecast.ToolTip='Прогноз по записанному прошлому кругу и текущей разнице. Пока нет сравнения, используется время прошлого круга как ориентир.'
+    $controls.Forecast.ToolTip='Эталон: '+(Get-ComparisonLabel $display.ReferenceMode)+'. При отсутствии точек личного рекорда прогноз недоступен.'
     $bestLabel=if ($timing.BestIsObserved) { 'BEST*  ' } else { 'BEST  ' }
     $sessionBest=if ($Demo) { 89000 } elseif ($broadcast.Fresh) { $broadcast.Best } else { 0 }
     $sessionText=if ($sessionBest -gt 0) { [AccOverlay.Timing]::Time($sessionBest) } elseif ($script:broadcastRestartRequired -and -not $broadcast.Fresh) { 'ПЕРЕЗАПУСТИ ACC' } elseif (-not $Demo -and -not $broadcast.Fresh) { 'НЕТ СВЯЗИ' } else { '--:--.---' }
@@ -256,7 +295,7 @@ $timer.Add_Tick({
     if ($timing.BestIsObserved) { $controls.Best.ToolTip+=' BEST* — замеченный круг, действительность которого ещё не подтверждена.' }
     $controls.LastLap.Text=[AccOverlay.Timing]::Time($timing.LastLap)
     for ($i=0;$i -lt 3;$i++) { $controls["D$i"].ToolTip='Новый завершённый сектор минус сохранённый сектор прошлого круга. ≈ — граница восстановлена по отсчётам игры. После финиша результат держится 5 секунд.' }
-    $controls.LapDelta.ToolTip=if ($display.Holding) { 'Разница последних двух завершённых кругов из собственной истории оверлея.' } else { $display.DeltaStatus+'. Записано кругов: '+$timing.RecordedLaps+'. Точек прошлого круга: '+$timing.ReferenceSamples }
+    $controls.LapDelta.ToolTip='Эталон: '+(Get-ComparisonLabel $display.ReferenceMode)+'. '+$(if ($display.Holding) { 'Итоговая разница с эталоном, выбранным на старте круга.' } else { $display.DeltaStatus+'. Записано кругов: '+$timing.RecordedLaps+'. Точек эталона: '+$timing.ReferenceSamples })
     if (-not $Demo -and ([DateTime]::UtcNow-$script:lastDiagnostic).TotalSeconds -ge 2) {
         $script:lastDiagnostic=[DateTime]::UtcNow
         try {
@@ -265,7 +304,7 @@ $timer.Add_Tick({
     }
  } catch { $controls.State.Text='ОШИБКА ДАННЫХ'; Write-Warning $_ }
 })
-$window.Add_Closed({ $timer.Stop(); $reader.Dispose(); $broadcast.Dispose(); try { @{Left=$window.Left;Top=$window.Top} | ConvertTo-Json | Set-Content $settings } catch {} })
+$window.Add_Closed({ $timer.Stop(); $reader.Dispose(); $broadcast.Dispose(); if ($null -ne $script:graphWindow) { $script:graphWindow.Close() }; try { @{Left=$window.Left;Top=$window.Top} | ConvertTo-Json | Set-Content $settings } catch {} })
 if ($Preview) {
     $Demo=$true
     $window.Add_ContentRendered({
@@ -277,6 +316,27 @@ if ($Preview) {
             $encoder=New-Object Windows.Media.Imaging.PngBitmapEncoder
             $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bmp))
             $stream=[IO.File]::Create((Join-Path $DataDirectory 'preview.png')); $encoder.Save($stream); $stream.Dispose()
+            if ($script:graphWindow.IsVisible) {
+                $graphBmp=New-Object Windows.Media.Imaging.RenderTargetBitmap([int][Math]::Ceiling($script:graphWindow.ActualWidth),[int][Math]::Ceiling($script:graphWindow.ActualHeight),96,96,[Windows.Media.PixelFormats]::Pbgra32)
+                $graphBmp.Render($script:graphWindow)
+                $graphEncoder=New-Object Windows.Media.Imaging.PngBitmapEncoder
+                $graphEncoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($graphBmp))
+                $graphStream=[IO.File]::Create((Join-Path $DataDirectory 'preview-graph.png')); $graphEncoder.Save($graphStream); $graphStream.Dispose()
+                $onLeft=$script:graphWindow.Left -lt $window.Left
+                $combinedWidth=[int][Math]::Ceiling($window.ActualWidth+6+$script:graphWindow.ActualWidth)
+                $visual=New-Object Windows.Media.DrawingVisual
+                $drawing=$visual.RenderOpen()
+                $mainX=if ($onLeft) { $script:graphWindow.ActualWidth+6 } else { 0 }
+                $graphX=if ($onLeft) { 0 } else { $window.ActualWidth+6 }
+                $drawing.DrawImage($bmp,(New-Object Windows.Rect($mainX,0,$window.ActualWidth,$window.ActualHeight)))
+                $drawing.DrawImage($graphBmp,(New-Object Windows.Rect($graphX,(($window.ActualHeight-$script:graphWindow.ActualHeight)/2),$script:graphWindow.ActualWidth,$script:graphWindow.ActualHeight)))
+                $drawing.Close()
+                $combined=New-Object Windows.Media.Imaging.RenderTargetBitmap($combinedWidth,[int]$window.ActualHeight,96,96,[Windows.Media.PixelFormats]::Pbgra32)
+                $combined.Render($visual)
+                $combinedEncoder=New-Object Windows.Media.Imaging.PngBitmapEncoder
+                $combinedEncoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($combined))
+                $combinedStream=[IO.File]::Create((Join-Path $DataDirectory 'preview-with-graph.png')); $combinedEncoder.Save($combinedStream); $combinedStream.Dispose()
+            }
             $this.Stop(); $window.Close()
         })
         $capture.Start()

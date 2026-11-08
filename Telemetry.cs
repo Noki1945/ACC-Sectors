@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Text;
 
 namespace AccOverlay {
+ public enum ComparisonMode { Automatic, Previous, PersonalBest }
  public sealed class Frame {
   public int Packet, Status, Session, Laps, Current, Last, Best, Sector, Split;
   public float Remaining, Position;
@@ -49,6 +50,33 @@ namespace AccOverlay {
   public void Dispose() { if(view!=IntPtr.Zero) UnmapViewOfFile(view); if(handle!=IntPtr.Zero) CloseHandle(handle); view=handle=IntPtr.Zero; }
  }
  public sealed class Timing {
+  ComparisonMode mode=ComparisonMode.Automatic;
+  LapReference previousReference, personalReference, activeReference;
+  int activeReferenceTotal, pendingReferenceTotal;
+  bool activeReferenceEstimated, pendingReferenceEstimated;
+  ComparisonMode pendingReferenceMode;
+  LapReference graphStartReference,pendingGraphReference;
+  int graphStartTotal,pendingGraphTotal;
+  ComparisonMode graphStartMode,pendingGraphMode;
+  public bool ShowDeltaGraph { get; set; }
+  DeltaGraphData completedGraph;
+  void FreezeGraphReference() { graphStartReference=activeReference;graphStartTotal=activeReferenceTotal;graphStartMode=EffectiveMode; }
+  float[] pendingPositions;
+  int[] pendingTimes;
+  int currentSession;
+  public ComparisonMode Mode { get { return mode; } set { if(mode!=value) { mode=value; SelectReference(); RecalculateDelta(); } } }
+  public ComparisonMode EffectiveMode { get { return ResolveMode(mode,currentSession); } }
+  public static ComparisonMode ResolveMode(ComparisonMode choice,int session) { return choice!=ComparisonMode.Automatic?choice:(session==1 || session==3 || session==7?ComparisonMode.PersonalBest:ComparisonMode.Previous); }
+  void SelectReference() {
+   bool best=EffectiveMode==ComparisonMode.PersonalBest;
+   activeReference=best?personalReference:previousReference;
+   if(best && activeReference!=null && officialBest>0 && activeReference.Total!=officialBest) activeReference=null;
+   activeReferenceTotal=activeReference!=null?activeReference.Total:(best?officialBest:previousLap);
+   activeReferenceEstimated=activeReference!=null && activeReference.Estimated;
+   referencePositions=activeReference!=null?(float[])activeReference.Positions.Clone():new float[0];
+   referenceTimes=activeReference!=null?(int[])activeReference.Times.Clone():new int[0];
+  }
+  void RecalculateDelta() { if(prior!=null) CalculatePositionDelta(prior); }
   readonly List<LapRecord> history=new List<LapRecord>();
   public LapRecord[] History { get { return history.ToArray(); } }
   public int[] Sectors=new int[3], Previous=new int[3];
@@ -84,7 +112,7 @@ namespace AccOverlay {
   public bool HasReference { get { return referencePositions.Length>1; } }
   public int ReferenceSamples { get { return referencePositions.Length; } }
   public int RecordedLaps { get { return history.Count; } }
-  public void Reset() { history.Clear(); sectorEstimated=new bool[3]; previousEstimated=new bool[3]; pendingEstimated=null; completedEstimatedDifferences=new bool[3]; pendingLocalTotal=pendingBoundaryClock=pendingBoundaryMin=0; lastSampleAt=0; Sectors=new int[3]; Previous=new int[3]; Differences=new int?[3]; lapSectors=new int[3]; pendingSectors=completedDisplay=null; completedDifferences=null; holdUntil=0; wrapWaitSince=lapCounterWaitSince=-1; pendingSector=0; LapDifference=LiveDifference=positionEstimate=null; Laps=Best=LastLap=previousLap=officialBest=observedBest=0; BestIsObserved=false; lapValid=true; prior=null; positions.Clear(); times.Clear(); referencePositions=new float[0]; referenceTimes=new int[0]; fullLap=false; }
+  public void Reset() { completedGraph=null; graphStartReference=pendingGraphReference=null;graphStartTotal=pendingGraphTotal=0; previousReference=personalReference=activeReference=null; activeReferenceTotal=pendingReferenceTotal=0; activeReferenceEstimated=pendingReferenceEstimated=false; pendingPositions=null; pendingTimes=null; history.Clear(); sectorEstimated=new bool[3]; previousEstimated=new bool[3]; pendingEstimated=null; completedEstimatedDifferences=new bool[3]; pendingLocalTotal=pendingBoundaryClock=pendingBoundaryMin=0; lastSampleAt=0; Sectors=new int[3]; Previous=new int[3]; Differences=new int?[3]; lapSectors=new int[3]; pendingSectors=completedDisplay=null; completedDifferences=null; holdUntil=0; wrapWaitSince=lapCounterWaitSince=-1; pendingSector=0; LapDifference=LiveDifference=positionEstimate=null; Laps=Best=LastLap=previousLap=officialBest=observedBest=0; BestIsObserved=false; lapValid=true; prior=null; positions.Clear(); times.Clear(); referencePositions=new float[0]; referenceTimes=new int[0]; fullLap=false; }
   void Record(int index,int value) { if(value<=0) return; Sectors[index]=value; Differences[index]=Previous[index]>0?(int?)(value-Previous[index]):null; }
   static bool ValidTime(int value) { return value>0 && value<int.MaxValue; }
   void CaptureBoundary(int sector,int cumulative,bool estimated) {
@@ -97,6 +125,7 @@ namespace AccOverlay {
    if(f.Status==0) { Reset(); return; }
    if(f.Status==1) { Reset(); return; }
    if(prior!=null && (f.Session!=prior.Session || f.SessionIndex!=prior.SessionIndex || f.Laps<prior.Laps)) Reset();
+   currentSession=f.Session;
    // The counter can advance before the clock/position reset. Wait for the
    // matching new-lap clock without appending an old-lap sample to the new lap.
    if(prior!=null && f.Laps==prior.Laps+1 && prior.Current>1000 && f.Current>=prior.Current) {
@@ -119,8 +148,11 @@ namespace AccOverlay {
    }
    if(prior!=null) {
     if(f.Laps==prior.Laps+1) {
-     if(positions.Count>1) { referencePositions=positions.ToArray(); referenceTimes=times.ToArray(); }
-     else { referencePositions=new float[0]; referenceTimes=new int[0]; }
+     pendingPositions=positions.ToArray(); pendingTimes=times.ToArray();
+     pendingReferenceTotal=activeReferenceTotal; pendingReferenceEstimated=activeReferenceEstimated;
+     pendingReferenceMode=EffectiveMode;
+     pendingGraphReference=graphStartReference; pendingGraphTotal=graphStartTotal; pendingGraphMode=graphStartMode;
+     completedGraph=null;
      positions.Clear(); times.Clear(); positions.Add(0); times.Add(0);
      pendingFull=fullLap; pendingValid=lapValid; fullLap=true;
      pendingSectors=(int[])lapSectors.Clone(); pendingLast=prior.Last;
@@ -128,7 +160,7 @@ namespace AccOverlay {
      pendingLocalTotal=prior.Current>0 && f.Current>=0 && f.Current<1000?(int)Math.Max(0,prior.Current+Math.Min(250,Math.Max(0,now-lastSampleAt))-f.Current):0;
      holdUntil=now+5000;
      lapSectors=new int[3]; sectorEstimated=new bool[3]; pendingSector=0;
-    } else if(f.Laps>prior.Laps+1) { Previous=new int[3]; Sectors=new int[3]; lapSectors=new int[3]; pendingSectors=completedDisplay=null; holdUntil=0; pendingSector=0; Differences=new int?[3]; positions.Clear(); times.Clear(); referencePositions=new float[0]; referenceTimes=new int[0]; fullLap=false; previousLap=f.Last; LapDifference=null; }
+    } else if(f.Laps>prior.Laps+1) { Previous=new int[3]; Sectors=new int[3]; lapSectors=new int[3]; pendingSectors=completedDisplay=null; holdUntil=0; pendingSector=0; Differences=new int?[3]; positions.Clear(); times.Clear(); fullLap=false; previousLap=ValidTime(f.Last)?f.Last:0; previousReference=null; LapDifference=null; SelectReference(); }
     else if(f.Sector!=prior.Sector && f.Sector>0 && f.Sector<=2 && f.Sector==prior.Sector+1) {
      if(f.Sector==1) { Sectors=new int[3]; Differences=new int?[3]; }
      pendingSector=f.Sector;
@@ -143,6 +175,8 @@ namespace AccOverlay {
     fullLap=f.Current<=1000 && f.Sector==0 && f.Position<0.01f;
     if(fullLap) { positions.Add(0); times.Add(0); }
     if(f.Sector==1 && f.Split>0 && f.Split<=f.Current) { lapSectors[0]=f.Split; Record(0,f.Split); }
+    SelectReference();
+    FreezeGraphReference();
    }
    // ACC publishes cumulative split times; wait if the split lags the sector index.
    if(pendingSector==f.Sector && pendingSector>0 && ValidTime(f.Split) && (f.Current==0 || f.Split<=f.Current) && (pendingBoundaryClock==0 || (f.Split>=pendingBoundaryMin-100 && f.Split<=pendingBoundaryClock+100))) {
@@ -150,28 +184,45 @@ namespace AccOverlay {
     if((pendingSector==1 && lapSectors[0]>0 && !sectorEstimated[0]) || (pendingSector==2 && lapSectors[1]>0)) pendingSector=0;
    }
    // The lap counter can arrive before the final lap time.
-   int finishedTotal=ValidTime(f.Last)?f.Last:((now>=holdUntil-4500)?pendingLocalTotal:0);
+   bool finalTimeReady=ValidTime(f.Last) && (f.Last!=pendingLast || pendingLocalTotal<=0 || Math.Abs((long)f.Last-pendingLocalTotal)<=500);
+   int finishedTotal=finalTimeReady?f.Last:((now>=holdUntil-(ValidTime(f.Last)?4000:4500))?pendingLocalTotal:0);
    if(pendingSectors!=null && ValidTime(finishedTotal) && (finishedTotal!=pendingLast || (f.Current>=300 && f.Current<=finishedTotal/2))) {
     Sectors=(int[])pendingSectors.Clone();
     LastLap=finishedTotal;
     if(Sectors[0]>0 && Sectors[1]>0) Record(2,finishedTotal-Sectors[0]-Sectors[1]);
-    LapDifference=previousLap>0?(int?)(finishedTotal-previousLap):null;
+    LapDifference=pendingReferenceTotal>0?(int?)(finishedTotal-pendingReferenceTotal):null;
     if(observedBest==0 || finishedTotal<observedBest) observedBest=finishedTotal;
     // Official ACC best remains authoritative. Only locally recorded valid, full
     // laps may fill in while the game has not published its best yet.
-    if(pendingFull && pendingValid && ValidTime(f.Last) && (officialBest==0 || finishedTotal<officialBest)) officialBest=finishedTotal;
-    if(referencePositions.Length>0 && referencePositions[referencePositions.Length-1]<1 && finishedTotal>referenceTimes[referenceTimes.Length-1]) {
-     int length=referencePositions.Length; Array.Resize(ref referencePositions,length+1); Array.Resize(ref referenceTimes,length+1); referencePositions[length]=1; referenceTimes[length]=finishedTotal;
+    if(pendingFull && pendingValid && finalTimeReady && (officialBest==0 || finishedTotal<officialBest)) officialBest=finishedTotal;
+    if(pendingPositions!=null && pendingPositions.Length>0 && pendingPositions[pendingPositions.Length-1]<1 && finishedTotal>pendingTimes[pendingTimes.Length-1]) {
+     int length=pendingPositions.Length; Array.Resize(ref pendingPositions,length+1); Array.Resize(ref pendingTimes,length+1); pendingPositions[length]=1; pendingTimes[length]=finishedTotal;
     }
+    completedGraph=DeltaGraphData.Build(pendingFull,pendingPositions,pendingTimes,finishedTotal,pendingGraphReference!=null?pendingGraphReference.Positions:null,pendingGraphReference!=null?pendingGraphReference.Times:null,pendingGraphTotal,pendingGraphMode,!finalTimeReady || (pendingGraphReference!=null && pendingGraphReference.Estimated));
+    previousReference=new LapReference(finishedTotal,Sectors,pendingEstimated,pendingPositions,pendingTimes,!finalTimeReady);
+    if(pendingFull && pendingValid && finalTimeReady && previousReference.CompleteTrace && (personalReference==null || finishedTotal<=personalReference.Total) && (officialBest==0 || finishedTotal<=officialBest)) personalReference=previousReference;
     bool[] recordedEstimated=pendingEstimated ?? new bool[3];
-    recordedEstimated[2]=recordedEstimated[0] || recordedEstimated[1] || !ValidTime(f.Last);
-    history.Add(new LapRecord(f.Laps,finishedTotal,Sectors,recordedEstimated,!ValidTime(f.Last)));
+    recordedEstimated[2]=recordedEstimated[0] || recordedEstimated[1] || !finalTimeReady;
+    history.Add(new LapRecord(f.Laps,finishedTotal,Sectors,recordedEstimated,!finalTimeReady));
     for(int i=0;i<3;i++) completedEstimatedDifferences[i]=recordedEstimated[i] || previousEstimated[i];
     completedDisplay=(int[])Sectors.Clone(); completedDifferences=(int?[])Differences.Clone();
     previousLap=finishedTotal; Previous=(int[])Sectors.Clone(); previousEstimated=(bool[])recordedEstimated.Clone(); pendingSectors=null;
     lapValid=f.Valid;
+    SelectReference();
+    FreezeGraphReference();
    }
    Best=officialBest>0?officialBest:observedBest; BestIsObserved=officialBest==0 && observedBest>0;
+   CalculatePositionDelta(f);
+   bool waitingForPosition=f.Laps>0 && f.Current<1000 && f.Position>0.90f;
+   if(!waitingForPosition && f.Position>=0 && f.Position<=1 && f.Current>=0) {
+    if(positions.Count==0 || (f.Position>positions[positions.Count-1]+0.0001f && f.Current>times[times.Count-1])) { positions.Add(f.Position); times.Add(f.Current); }
+    else if(positions.Count>0 && f.Position<positions[positions.Count-1]-0.02f) { fullLap=false; positions.Clear(); times.Clear(); }
+   }
+   lapValid=lapValid && f.Valid;
+   lastSampleAt=now;
+   prior=f;
+  }
+  void CalculatePositionDelta(Frame f) {
    LiveDifference=null; positionEstimate=null;
    bool waitingForPosition=f.Laps>0 && f.Current<1000 && f.Position>0.90f;
    if(!waitingForPosition && f.Position>=0 && f.Position<=1 && f.Current>=0) {
@@ -187,19 +238,17 @@ namespace AccOverlay {
      }
     }
     }
-    if(positions.Count==0 || (f.Position>positions[positions.Count-1]+0.0001f && f.Current>times[times.Count-1])) { positions.Add(f.Position); times.Add(f.Current); }
-    else if(positions.Count>0 && f.Position<positions[positions.Count-1]-0.02f) { fullLap=false; positions.Clear(); times.Clear(); }
    }
-   lapValid=lapValid && f.Valid;
-   lastSampleAt=now;
-   prior=f;
   }
   public Display GetDisplay() { return GetDisplay(ClockMs()); }
   public Display GetDisplay(long now) {
    Display d=new Display();
    if(prior==null) return d;
    d.Holding=completedDisplay!=null && now<holdUntil;
-   if(d.Holding) { d.Sectors=(int[])completedDisplay.Clone(); d.Differences=(int?[])completedDifferences.Clone(); d.EstimatedDifferences=(bool[])completedEstimatedDifferences.Clone(); d.Lap=LastLap; d.LapDelta=LapDifference; d.LapDeltaEstimated=(history.Count>0 && history[history.Count-1].EstimatedTotal) || (history.Count>1 && history[history.Count-2].EstimatedTotal); return d; }
+   d.ReferenceMode=d.Holding?pendingReferenceMode:EffectiveMode;
+   d.Graph=d.Holding?completedGraph:null;
+   d.GraphVisible=DeltaGraphLayout.ShouldShow(ShowDeltaGraph,d.Holding,d.Graph);
+   if(d.Holding) { d.Sectors=(int[])completedDisplay.Clone(); d.Differences=(int?[])completedDifferences.Clone(); d.EstimatedDifferences=(bool[])completedEstimatedDifferences.Clone(); d.Lap=LastLap; d.LapDelta=LapDifference; d.LapDeltaEstimated=pendingReferenceEstimated || (history.Count>0 && history[history.Count-1].EstimatedTotal); return d; }
    d.Sectors=(int[])lapSectors.Clone();
    for(int i=0;i<3;i++) if(d.Sectors[i]>0 && Previous[i]>0) d.Differences[i]=d.Sectors[i]-Previous[i];
    int sector=prior.Sector;
@@ -214,15 +263,17 @@ namespace AccOverlay {
    // position-based reference is missing at the current point on the track.
    int cumulative=0, referenceCumulative=0; bool haveCompleted=false;
    for(int i=0;i<prior.Sector && i<3;i++) {
-    if(lapSectors[i]<=0 || Previous[i]<=0) { haveCompleted=false; break; }
-    cumulative+=lapSectors[i]; referenceCumulative+=Previous[i]; haveCompleted=true;
+    if(activeReference==null || lapSectors[i]<=0 || activeReference.Sectors[i]<=0) { haveCompleted=false; break; }
+    cumulative+=lapSectors[i]; referenceCumulative+=activeReference.Sectors[i]; haveCompleted=true;
    }
    d.Lap=prior.Current; d.LapDelta=LiveDifference ?? (haveCompleted?(int?)(cumulative-referenceCumulative):positionEstimate);
+   d.LapDeltaEstimated=activeReferenceEstimated && d.LapDelta.HasValue;
    d.DeltaStatus=LiveDifference.HasValue?"Текущая дельта":(haveCompleted?"По завершённым секторам":(positionEstimate.HasValue?"Оценка по записи":(referencePositions.Length>1?"Нет записи этой точки":(history.Count>0?"Нет точек прошлого круга":"Нет записанного круга"))));
    if(!LiveDifference.HasValue && !haveCompleted && positionEstimate.HasValue) d.LapDeltaEstimated=true;
-   if(!LiveDifference.HasValue && haveCompleted) for(int i=0;i<prior.Sector && i<3;i++) d.LapDeltaEstimated|=sectorEstimated[i] || previousEstimated[i];
-   if(previousLap>0) {
-    int forecast=previousLap+(d.LapDelta ?? 0);
+   if(!LiveDifference.HasValue && haveCompleted) { d.LapDeltaEstimated=true; }
+   if(EffectiveMode==ComparisonMode.PersonalBest && !HasReference) { d.LapDelta=null; d.DeltaStatus="Нет точек личного рекорда"; }
+   if(activeReferenceTotal>0 && (EffectiveMode!=ComparisonMode.PersonalBest || HasReference)) {
+    int forecast=activeReferenceTotal+(d.LapDelta ?? 0);
     if(forecast>prior.Current) d.Forecast=forecast;
    }
    for(int i=0;i<3;i++) d.EstimatedDifferences[i]=sectorEstimated[i] || previousEstimated[i];
@@ -232,6 +283,13 @@ namespace AccOverlay {
   public static string Delta(int? ms) { return ms.HasValue?string.Format(System.Globalization.CultureInfo.InvariantCulture,"{0:+0.000;-0.000;0.000}",ms.Value/1000.0):"—"; }
   public static string Gap(int ms) { if(ms==0 || ms==-1 || ms==int.MaxValue || ms==int.MinValue) return "—"; int magnitude=Math.Abs(ms); return magnitude>=60000?Time(magnitude):(magnitude/1000.0).ToString("0.000",CultureInfo.InvariantCulture); }
  }
+ sealed class LapReference {
+  public readonly int Total; public readonly int[] Sectors,Times; public readonly float[] Positions; public readonly bool Estimated;
+  public bool CompleteTrace { get { return Positions.Length>=3 && Positions[0]<=0.001f && Positions[Positions.Length-1]>=0.999f; } }
+  public LapReference(int total,int[] sectors,bool[] estimated,float[] positions,int[] times,bool estimatedTotal) {
+   Total=total; Sectors=(int[])sectors.Clone(); Positions=positions!=null?(float[])positions.Clone():new float[0]; Times=times!=null?(int[])times.Clone():new int[0]; Estimated=estimatedTotal;
+  }
+ }
  public sealed class Display {
   public int[] Sectors=new int[3];
   public int?[] Differences=new int?[3];
@@ -239,6 +297,9 @@ namespace AccOverlay {
   public int? LapDelta;
   public bool LapDeltaEstimated;
   public bool Holding;
+  public ComparisonMode ReferenceMode;
+  public DeltaGraphData Graph;
+  public bool GraphVisible;
   public int Forecast;
   public bool[] EstimatedDifferences=new bool[3];
   public string DeltaStatus="Нет записанного круга";

@@ -1,12 +1,12 @@
-param([string]$OutputDirectory=(Join-Path $PSScriptRoot 'dist'))
+﻿param([string]$OutputDirectory=(Join-Path $PSScriptRoot 'dist'))
 $ErrorActionPreference='Stop'
-$version='1.0.0'
+$version='0.2.0'
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw 'The .NET Framework C# compiler was not found.' }
 $destination=[IO.Path]::GetFullPath($OutputDirectory)
 [void][IO.Directory]::CreateDirectory($destination)
 $exe=Join-Path $destination 'ACC-Sectors.exe'
-$payload=@('Overlay.ps1','Telemetry.cs','Broadcast.cs','BroadcastConfig.ps1','RegressionTests.ps1')
+$payload=@('Overlay.ps1','Telemetry.cs','Broadcast.cs','BroadcastConfig.ps1','RegressionTests.ps1','Preferences.ps1','DeltaGraph.cs','DeltaGraph.ps1')
 $compilerArgs=@('/nologo','/target:winexe','/platform:x64','/optimize+','/codepage:65001','/r:System.Windows.Forms.dll',('/out:'+$exe))
 foreach($file in $payload) {
     $path=Join-Path $PSScriptRoot $file
