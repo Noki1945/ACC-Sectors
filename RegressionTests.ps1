@@ -345,3 +345,22 @@ try {
     $prefs.ShowDeltaGraph=$true; Write-OverlayPreferences $prefs $preferenceFile
     if (-not (Read-OverlayPreferences $preferenceFile).ShowDeltaGraph) { throw 'Graph preference did not persist' }
 } finally { if (Test-Path -LiteralPath $preferenceFile) { Remove-Item -LiteralPath $preferenceFile } }
+# A first/out lap can have thousands of useful points but no start-line sample.
+# Draw only the overlapping range; never extrapolate missing start/end sections.
+$partialPositions=[float[]]$p[12..95]; $partialTimes=[int[]]$reference[12..95]
+$g=[AccOverlay.DeltaGraphData]::Build($true,$p,$times,90000,$partialPositions,$partialTimes,95000,[AccOverlay.ComparisonMode]::Previous,$false)
+if ($g.Segments.Length -lt 70) { throw 'Partial previous-lap trace discarded all usable overlap' }
+foreach ($segment in $g.Segments) {
+    if ($segment.X1 -lt $partialPositions[0] -or $segment.X2 -gt $partialPositions[-1]) { throw 'Partial reference was extrapolated' }
+}
+$t=New-Object AccOverlay.Timing; $t.ShowDeltaGraph=$true
+for($i=12;$i -lt 100;$i++) {
+    $f=Sample 0 ([int][Math]::Floor($i/34.0)) ($i*950) 0 ($i/100.0); $t.Update($f,($i*950))
+}
+$f=Sample 1 0 0 95000 0; $t.Update($f,95000)
+if ($null -ne $t.GetDisplay(95000).Graph) { throw 'Incomplete current lap must still not display a graph' }
+Feed-GraphLap $t 1 90000 95000 95000 0
+$d=$t.GetDisplay(185000)
+if (-not $d.GraphVisible -or $d.Graph.Segments.Length -lt 70 -or $d.Graph.FinalDelta -ne -5000) { throw 'Full lap after partially recorded out lap lost the graph' }
+# Source-only interactive tester checks are excluded from the bundled EXE.
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'TestDriveTests.ps1')) { . (Join-Path $PSScriptRoot 'TestDriveTests.ps1') }

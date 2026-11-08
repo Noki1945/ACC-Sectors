@@ -1,8 +1,13 @@
-﻿param([switch]$Demo, [switch]$SelfTest, [switch]$Preview, [ValidateRange(0,10000)][int]$PreviewDelayMs=400, [string]$DataDirectory)
+﻿param([switch]$Demo, [switch]$SelfTest, [switch]$TestMode, [Nullable[int]]$TestSeed=$null, [switch]$Preview, [ValidateRange(0,10000)][int]$PreviewDelayMs=400, [string]$DataDirectory)
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($DataDirectory)) { $DataDirectory=$PSScriptRoot }
+if ($TestMode) { $Demo=$true; $DataDirectory=Join-Path $DataDirectory 'TestMode' }
 [void][IO.Directory]::CreateDirectory($DataDirectory)
-Add-Type -Path @((Join-Path $PSScriptRoot 'Telemetry.cs'),(Join-Path $PSScriptRoot 'Broadcast.cs'),(Join-Path $PSScriptRoot 'DeltaGraph.cs'))
+$coreSources=@((Join-Path $PSScriptRoot 'Telemetry.cs'),(Join-Path $PSScriptRoot 'Broadcast.cs'),(Join-Path $PSScriptRoot 'DeltaGraph.cs'))
+$testDriverPath=Join-Path $PSScriptRoot 'TestDrive.cs'
+if ($TestMode -and -not (Test-Path -LiteralPath $testDriverPath)) { throw 'Тестер доступен только в исходниках проекта. Скачайте исходный код и запустите Test.cmd.' }
+if (($TestMode -or $SelfTest) -and (Test-Path -LiteralPath $testDriverPath)) { $coreSources+=$testDriverPath }
+Add-Type -Path $coreSources
 . (Join-Path $PSScriptRoot 'Preferences.ps1')
 if ($SelfTest) {
     function Frame($laps,$sector,$split,$last=0) {
@@ -228,9 +233,17 @@ function Get-DemoFrame([long]$clock) {
     return $f
 }
 if ($Preview) { $Demo=$true; $script:preferences.ShowDeltaGraph=$true; Apply-Preferences }
-if ($Demo) {
+if ($Demo -and -not $TestMode) {
     for ($demoSeed=0; $demoSeed -le 183000; $demoSeed+=500) { $timing.Update((Get-DemoFrame $demoSeed),[long]$demoSeed) }
     $demoClock=[Diagnostics.Stopwatch]::StartNew()
+}
+if ($TestMode) {
+    $script:testDrive=if ($null -ne $TestSeed) { New-Object AccOverlay.TestDrive -ArgumentList ([int]$TestSeed) } else { New-Object AccOverlay.TestDrive }
+    $timing=$script:testDrive.Timing
+    $script:preferences.ShowDeltaGraph=$true
+    Apply-Preferences
+    $demoClock=[Diagnostics.Stopwatch]::StartNew()
+    . (Join-Path $PSScriptRoot 'TestMode.ps1')
 }
 $window.Left=40; $window.Top=160
 $settings=Join-Path $DataDirectory 'position.json'
@@ -245,7 +258,12 @@ $script:lastDiagnostic=[DateTime]::MinValue
 $timer=New-Object Windows.Threading.DispatcherTimer; $timer.Interval=[TimeSpan]::FromMilliseconds(16)
 $timer.Add_Tick({
  try {
-    if ($Demo) {
+    if ($TestMode) {
+        $display=$script:testDrive.Tick($demoClock.ElapsedMilliseconds)
+        $controls.State.Text='ТЕСТ / БЕЗ ACC'
+        $script:testControls.TestStatus.Text=('Сценарий: '+$script:testControls.ScenarioChoice.Text+"`n"+'Эталон: '+(Get-ComparisonLabel $timing.EffectiveMode)+"`n"+'Записано кругов: '+$timing.RecordedLaps+' · отрезков графика: '+$(if ($null -ne $display.Graph) { $display.Graph.Segments.Length } else { 0 }))
+        $script:testControls.TestStatus.Text+="`nSeed: "+$script:testDrive.Seed+' · круг '+[AccOverlay.Timing]::Time($script:testDrive.SimulatedLapTime)+$(if ($script:testDrive.SimulatedLapValid) { '' } else { ' · НЕДЕЙСТВИТЕЛЬНЫЙ' })
+    } elseif ($Demo) {
         $demoTime=183000+$demoClock.ElapsedMilliseconds
         $timing.Update((Get-DemoFrame $demoTime),[long]$demoTime)
         $display=$timing.GetDisplay([long]$demoTime); $controls.State.Text='ДЕМО'
@@ -274,7 +292,7 @@ $timer.Add_Tick({
     }
     else { $controls.GapAhead.Text='↑ —'; $controls.GapBehind.Text='↓ —' }
     Update-ComparisonLabel
-    if ($display.Holding) { $controls.State.Text=if ($Demo) { 'ДЕМО / ФИНИШ' } else { 'ФИНИШ / 5 С' } }
+    if ($display.Holding) { $controls.State.Text=if ($TestMode) { 'ТЕСТ / ФИНИШ / 5 С' } elseif ($Demo) { 'ДЕМО / ФИНИШ' } else { 'ФИНИШ / 5 С' } }
     for ($i=0;$i -lt 3;$i++) {
         $controls["S$i"].Text=if ($display.Sectors[$i] -gt 0 -or $display.ActiveSector -eq $i) { ($display.Sectors[$i]/1000.0).ToString('0.000',[Globalization.CultureInfo]::InvariantCulture) } else { '--.---' }
         $controls["D$i"].Text=$(if ($display.EstimatedDifferences[$i] -and $null -ne $display.Differences[$i]) { '≈' } else { '' })+[AccOverlay.Timing]::Delta($display.Differences[$i]); $controls["S$i"].Foreground='#FFFFFF'; $controls["D$i"].Foreground=Color $display.Differences[$i]
@@ -316,6 +334,13 @@ if ($Preview) {
             $encoder=New-Object Windows.Media.Imaging.PngBitmapEncoder
             $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bmp))
             $stream=[IO.File]::Create((Join-Path $DataDirectory 'preview.png')); $encoder.Save($stream); $stream.Dispose()
+            if ($TestMode) {
+                $testBmp=New-Object Windows.Media.Imaging.RenderTargetBitmap([int][Math]::Ceiling($script:testWindow.ActualWidth),[int][Math]::Ceiling($script:testWindow.ActualHeight),96,96,[Windows.Media.PixelFormats]::Pbgra32)
+                $testBmp.Render($script:testWindow)
+                $testEncoder=New-Object Windows.Media.Imaging.PngBitmapEncoder
+                $testEncoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($testBmp))
+                $testStream=[IO.File]::Create((Join-Path $DataDirectory 'preview-test-controls.png')); $testEncoder.Save($testStream); $testStream.Dispose()
+            }
             if ($script:graphWindow.IsVisible) {
                 $graphBmp=New-Object Windows.Media.Imaging.RenderTargetBitmap([int][Math]::Ceiling($script:graphWindow.ActualWidth),[int][Math]::Ceiling($script:graphWindow.ActualHeight),96,96,[Windows.Media.PixelFormats]::Pbgra32)
                 $graphBmp.Render($script:graphWindow)

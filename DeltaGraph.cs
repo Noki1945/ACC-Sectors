@@ -31,7 +31,11 @@ namespace AccOverlay {
    return new DeltaGraphData(segments.Count>=2?segments.ToArray():new DeltaGraphSegment[0],final,mode,estimated);
   }
   static bool ValidTrace(float[] positions,int[] times) {
-   if(positions==null || times==null || positions.Length!=times.Length || positions.Length<3 || positions[0]>0.001f || positions[positions.Length-1]<0.999f) return false;
+   // A completed reference lap may have been recorded from the pit exit or
+   // after the overlay started. Use its actual overlapping range rather than
+   // rejecting all known samples for missing start/end points. Interpolate
+   // still refuses extrapolation and large gaps.
+   if(positions==null || times==null || positions.Length!=times.Length || positions.Length<3) return false;
    for(int i=0;i<positions.Length;i++) {
     if(float.IsNaN(positions[i]) || float.IsInfinity(positions[i]) || positions[i]<0 || positions[i]>1 || times[i]<0) return false;
     if(i>0 && (positions[i]<=positions[i-1] || times[i]<=times[i-1])) return false;
